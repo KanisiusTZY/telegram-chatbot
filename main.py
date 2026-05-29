@@ -24,15 +24,16 @@ log = logging.getLogger(__name__)
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 SESSION_FILE = "session"
 MAX_HISTORY = 10
 SUMMARIZE_WORD_LIMIT = 200
-FLASK_PORT = 8080
+FLASK_PORT = 5000
 
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
-ai = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+gemini = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """Lo adalah asisten AI yang santai, helpful, dan fun. Kepribadian lo:
 - Bahasa sehari-hari campur Indo-Inggris (kayak anak Jakarta ngobrol)
@@ -76,17 +77,28 @@ def get_ai_reply(user_id: int, user_message: str) -> str:
     add_to_history(user_id, "user", user_message)
 
     try:
-        response = ai.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=histories[user_id],
+        # Build Gemini contents from history (role: user/model)
+        contents = []
+        for msg in histories[user_id]:
+            role = "model" if msg["role"] == "assistant" else "user"
+            contents.append(genai_types.Content(
+                role=role,
+                parts=[genai_types.Part(text=msg["content"])]
+            ))
+
+        response = gemini.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=1024,
+            ),
         )
-        reply = response.content[0].text
+        reply = response.text
         add_to_history(user_id, "assistant", reply)
         return reply
     except Exception as e:
-        log.error(f"Anthropic API error: {e}")
+        log.error(f"Gemini API error: {e}")
         if histories[user_id] and histories[user_id][-1]["role"] == "user":
             histories[user_id].pop()
         return "Aduh, ada error nih dari AI-nya 😅 Coba lagi ya?"
