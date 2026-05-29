@@ -28,7 +28,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 SESSION_FILE = "session"
 MAX_HISTORY = 10
 SUMMARIZE_WORD_LIMIT = 200
-FLASK_PORT = 5000
+FLASK_PORT = 8099
 
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
