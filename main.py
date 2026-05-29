@@ -34,8 +34,8 @@ FLASK_PORT = 8099
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
 gemini = genai.Client(api_key=GEMINI_API_KEY)
-GEMINI_MODEL = "gemini-1.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-1.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.0-flash-lite"
 
 SYSTEM_PROMPT = """Lo adalah asisten AI yang santai, helpful, dan fun. Kepribadian lo:
 - Bahasa sehari-hari campur Indo-Inggris (kayak anak Jakarta ngobrol)
