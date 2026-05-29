@@ -28,13 +28,13 @@ args = "Login Telegram"
 name = "Telegram Userbot"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python main.py"
-waitForPort = 8080
-
-[workflows.workflow.metadata]
-outputType = "console"
+waitForPort = 5000
 
 [[workflows.workflow]]
 name = "Login Telegram"
@@ -58,6 +58,10 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["openssl"]
+
+[[ports]]
+localPort = 5000
+externalPort = 5000
 
 [[ports]]
 localPort = 8080
