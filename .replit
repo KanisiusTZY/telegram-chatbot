@@ -1,8 +1,9 @@
-modules = ["nodejs-24", "python-3.11"]
+modules = ["nodejs-20", "python-3.11", "web"]
 
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
+run = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
@@ -20,6 +21,10 @@ author = "agent"
 task = "workflow.run"
 args = "Telegram Userbot"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
 [[workflows.workflow]]
 name = "Telegram Userbot"
 author = "agent"
@@ -32,8 +37,17 @@ waitForPort = 8099
 [workflows.workflow.metadata]
 outputType = "console"
 
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "gunicorn --bind 0.0.0.0:5000 --reuse-port --reload main:app"
+waitForPort = 5000
+
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "FLASK_VANILLA_JS"
 expertMode = true
 
 [postMerge]
@@ -42,7 +56,7 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["openssl"]
+packages = ["openssl", "postgresql"]
 
 [[ports]]
 localPort = 5000
