@@ -2,6 +2,7 @@ import os
 import asyncio
 import threading
 import logging
+import time
 from datetime import datetime
 from collections import defaultdict
 
@@ -76,32 +77,39 @@ def get_ai_reply(user_id: int, user_message: str) -> str:
 
     add_to_history(user_id, "user", user_message)
 
-    try:
-        # Build Gemini contents from history (role: user/model)
-        contents = []
-        for msg in histories[user_id]:
-            role = "model" if msg["role"] == "assistant" else "user"
-            contents.append(genai_types.Content(
-                role=role,
-                parts=[genai_types.Part(text=msg["content"])]
-            ))
+    contents = []
+    for msg in histories[user_id]:
+        role = "model" if msg["role"] == "assistant" else "user"
+        contents.append(genai_types.Content(
+            role=role,
+            parts=[genai_types.Part(text=msg["content"])]
+        ))
 
-        response = gemini.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=1024,
-            ),
-        )
-        reply = response.text
-        add_to_history(user_id, "assistant", reply)
-        return reply
-    except Exception as e:
-        log.error(f"Gemini API error: {e}")
-        if histories[user_id] and histories[user_id][-1]["role"] == "user":
-            histories[user_id].pop()
-        return "Aduh, ada error nih dari AI-nya 😅 Coba lagi ya?"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = gemini.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=1024,
+                ),
+            )
+            reply = response.text
+            add_to_history(user_id, "assistant", reply)
+            return reply
+        except Exception as e:
+            is_503 = "503" in str(e) or "UNAVAILABLE" in str(e)
+            if is_503 and attempt < max_retries - 1:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                log.warning(f"Gemini 503, retry {attempt + 1}/{max_retries} in {wait}s...")
+                time.sleep(wait)
+                continue
+            log.error(f"Gemini API error: {e}")
+            if histories[user_id] and histories[user_id][-1]["role"] == "user":
+                histories[user_id].pop()
+            return "Aduh, ada error nih dari AI-nya 😅 Coba lagi ya?"
 
 
 # ─── Flask Keep-Alive ────────────────────────────────────────────────────────
