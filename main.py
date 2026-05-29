@@ -7,6 +7,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.tl.types import User
 from groq import Groq
 from flask import Flask
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+SESSION_STRING = os.environ.get("SESSION_STRING")
 SESSION_FILE = "session"
 MAX_HISTORY = 10
 SUMMARIZE_WORD_LIMIT = 200
@@ -134,7 +136,12 @@ def run_flask():
 
 # ─── Telegram Userbot ────────────────────────────────────────────────────────
 
-client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+    log.info("Using StringSession from env var")
+else:
+    client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+    log.info("Using SQLite session file")
 
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))

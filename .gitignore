@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Telegram session (jangan di-push ke GitHub!)
+*.session
+*.session-journal
