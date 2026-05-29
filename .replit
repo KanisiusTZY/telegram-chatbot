@@ -2,8 +2,8 @@ modules = ["nodejs-20", "python-3.11", "web"]
 
 [deployment]
 router = "application"
-deploymentTarget = "autoscale"
-run = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
+deploymentTarget = "vm"
+run = ["python", "main.py"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
