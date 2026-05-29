@@ -34,8 +34,8 @@ FLASK_PORT = 8099
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
 gemini = genai.Client(api_key=GEMINI_API_KEY)
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-1.5-pro"
 
 SYSTEM_PROMPT = """Lo adalah asisten AI yang santai, helpful, dan fun. Kepribadian lo:
 - Bahasa sehari-hari campur Indo-Inggris (kayak anak Jakarta ngobrol)
@@ -104,13 +104,14 @@ def get_ai_reply(user_id: int, user_message: str) -> str:
                 add_to_history(user_id, "assistant", reply)
                 return reply
             except Exception as e:
-                is_503 = "503" in str(e) or "UNAVAILABLE" in str(e)
-                if is_503 and attempt < max_retries - 1:
-                    log.warning(f"Gemini 503 ({model}), retry in 1s...")
+                err_str = str(e)
+                is_retriable = any(x in err_str for x in ["503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"])
+                if is_retriable and attempt < max_retries - 1:
+                    log.warning(f"Gemini error ({model}), retry in 1s...")
                     time.sleep(1)
                     continue
-                if is_503:
-                    log.warning(f"Model {model} unavailable, trying fallback...")
+                if is_retriable:
+                    log.warning(f"Model {model} unavailable/quota exceeded, trying fallback...")
                     break
                 log.error(f"Gemini API error: {e}")
                 if histories[user_id] and histories[user_id][-1]["role"] == "user":
