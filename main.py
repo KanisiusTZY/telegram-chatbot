@@ -7,7 +7,8 @@ from collections import defaultdict
 
 from telethon import TelegramClient, events
 from telethon.tl.types import User
-import anthropic
+from google import genai
+from google.genai import types as genai_types
 from flask import Flask
 
 # ─── Logging ────────────────────────────────────────────────────────────────
