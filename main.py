@@ -196,19 +196,24 @@ async def handle_private_message(event):
     user_id = sender.id
     username = f"@{sender.username}" if sender.username else sender.first_name
 
-    has_photo = isinstance(event.message.media, MessageMediaPhoto)
-    has_image_doc = (
-        isinstance(event.message.media, MessageMediaDocument)
-        and event.message.file
-        and event.message.file.mime_type
-        and event.message.file.mime_type.startswith("image/")
-    )
+    is_image = False
+    if event.message.media:
+        if isinstance(event.message.media, MessageMediaPhoto):
+            is_image = True
+        elif isinstance(event.message.media, MessageMediaDocument):
+            mime = getattr(event.message.file, "mime_type", "") or ""
+            if mime.startswith("image/"):
+                is_image = True
 
-    if has_photo or has_image_doc:
+    if is_image:
         caption = event.raw_text.strip()
         log.info(f"🖼️ [{username} | {user_id}] gambar diterima, caption: '{caption}'")
         async with client.action(event.chat_id, "typing"):
-            image_bytes = await event.download_media(file=bytes)
+            image_bytes = await event.message.download_media(file=bytes)
+            if not image_bytes:
+                await event.reply("Gambarnya gagal ke-download, coba kirim ulang")
+                return
+            log.info(f"🖼️ Image downloaded: {len(image_bytes)} bytes")
             reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
         await event.reply(reply)
         log.info(f"📤 [{username} | {user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
