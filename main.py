@@ -3,12 +3,14 @@ import asyncio
 import threading
 import logging
 import time
+import base64
+import io
 from datetime import datetime
 from collections import defaultdict
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import User
+from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument
 from groq import Groq
 from flask import Flask
 
@@ -36,6 +38,7 @@ FLASK_PORT = 8099
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 SYSTEM_PROMPT = """Lo adalah AI yang males, sarkastis, dan sedikit ngeselin — tapi tetap jawab pertanyaannya.
 
@@ -115,6 +118,45 @@ def get_ai_reply(user_id: int, user_message: str) -> str:
             return "Ada error nih dari AI-nya, coba lagi ya"
 
 
+def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> str:
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    prompt_text = caption if caption else "Gambar ini isinya apa?"
+
+    user_content = [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        },
+        {"type": "text", "text": prompt_text},
+    ]
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = groq_client.chat.completions.create(
+                model=GROQ_VISION_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=1024,
+            )
+            reply = response.choices[0].message.content
+            add_to_history(user_id, "user", f"[Kirim gambar] {prompt_text}")
+            add_to_history(user_id, "assistant", reply)
+            return reply
+        except Exception as e:
+            err_str = str(e)
+            is_retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
+            if is_retriable and attempt < max_retries - 1:
+                wait = 2 ** attempt
+                log.warning(f"Groq vision error, retry {attempt + 1}/{max_retries} in {wait}s...")
+                time.sleep(wait)
+                continue
+            log.error(f"Groq Vision API error: {e}")
+            return "Gambarnya gak bisa gua baca, coba lagi"
+
+
 # ─── Flask Keep-Alive ────────────────────────────────────────────────────────
 
 flask_app = Flask(__name__)
@@ -153,8 +195,26 @@ async def handle_private_message(event):
 
     user_id = sender.id
     username = f"@{sender.username}" if sender.username else sender.first_name
-    text = event.raw_text.strip()
 
+    has_photo = isinstance(event.message.media, MessageMediaPhoto)
+    has_image_doc = (
+        isinstance(event.message.media, MessageMediaDocument)
+        and event.message.file
+        and event.message.file.mime_type
+        and event.message.file.mime_type.startswith("image/")
+    )
+
+    if has_photo or has_image_doc:
+        caption = event.raw_text.strip()
+        log.info(f"🖼️ [{username} | {user_id}] gambar diterima, caption: '{caption}'")
+        async with client.action(event.chat_id, "typing"):
+            image_bytes = await event.download_media(file=bytes)
+            reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
+        await event.reply(reply)
+        log.info(f"📤 [{username} | {user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+        return
+
+    text = event.raw_text.strip()
     if not text:
         return
 
