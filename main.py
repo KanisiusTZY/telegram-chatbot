@@ -209,19 +209,6 @@ async def handle_private_message(event):
         caption = event.raw_text.strip()
         is_view_once = bool(getattr(event.message.media, "ttl_seconds", None))
 
-        if is_view_once:
-            try:
-                vo_bytes = await event.message.download_media(file=bytes)
-                if vo_bytes:
-                    await client.send_file(
-                        "me",
-                        vo_bytes,
-                        caption=f"📸 Foto sekali liat dari {username}",
-                    )
-                    log.info(f"📥 [{username} | {user_id}] foto sekali liat disimpen ke Saved Messages")
-            except Exception as e:
-                log.error(f"Gagal simpen ke Saved Messages: {e}")
-
         log.info(f"🖼️ [{username} | {user_id}] gambar diterima, caption: '{caption}'")
         async with client.action(event.chat_id, "typing"):
             image_bytes = await event.message.download_media(file=bytes)
@@ -229,6 +216,18 @@ async def handle_private_message(event):
                 await event.reply("Gambarnya gagal ke-download, coba kirim ulang")
                 return
             log.info(f"🖼️ Image downloaded: {len(image_bytes)} bytes")
+
+            if is_view_once:
+                try:
+                    await client.send_file(
+                        "me",
+                        io.BytesIO(image_bytes),
+                        caption=f"📸 Foto sekali liat dari {username}",
+                    )
+                    log.info(f"📥 [{username} | {user_id}] foto sekali liat disimpen ke Saved Messages")
+                except Exception as e:
+                    log.error(f"Gagal simpen ke Saved Messages: {e}")
+
             reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
         await event.reply(reply)
         log.info(f"📤 [{username} | {user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
