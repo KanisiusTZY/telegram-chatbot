@@ -207,6 +207,15 @@ async def handle_private_message(event):
 
     if is_image:
         caption = event.raw_text.strip()
+        is_view_once = bool(getattr(event.message.media, "ttl_seconds", None))
+
+        if is_view_once:
+            try:
+                await client.forward_messages("me", event.message)
+                log.info(f"📥 [{username} | {user_id}] foto sekali liat di-forward ke Saved Messages")
+            except Exception as e:
+                log.error(f"Gagal forward ke Saved Messages: {e}")
+
         log.info(f"🖼️ [{username} | {user_id}] gambar diterima, caption: '{caption}'")
         async with client.action(event.chat_id, "typing"):
             image_bytes = await event.message.download_media(file=bytes)
