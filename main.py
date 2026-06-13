@@ -219,14 +219,16 @@ async def handle_private_message(event):
 
             if is_view_once:
                 try:
+                    buf = io.BytesIO(image_bytes)
+                    buf.name = "photo.jpg"
                     await client.send_file(
                         "me",
-                        io.BytesIO(image_bytes),
+                        buf,
                         caption=f"📸 Foto sekali liat dari {username}",
                     )
                     log.info(f"📥 [{username} | {user_id}] foto sekali liat disimpen ke Saved Messages")
                 except Exception as e:
-                    log.error(f"Gagal simpen ke Saved Messages: {e}")
+                    log.error(f"Gagal simpen ke Saved Messages: {e}", exc_info=True)
 
             reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
         await event.reply(reply)
