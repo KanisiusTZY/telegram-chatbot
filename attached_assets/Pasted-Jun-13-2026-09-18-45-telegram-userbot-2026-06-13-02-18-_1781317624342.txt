@@ -1,0 +1,14 @@
+Jun 13 2026 09:18:45    telegram-userbot    2026-06-13 02:18:42 [INFO] 📥 [@zYisunshin | 7491706198] p
+Jun 13 2026 09:18:45    telegram-userbot    2026-06-13 02:18:43 [INFO] HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+Jun 13 2026 09:18:45    telegram-userbot    2026-06-13 02:18:43 [INFO] 📥 [@zYisunshin | 7491706198] ayo nanya yang jelas dong, cuma ketik satu huruf aja gak jelas apa maksudnya
+Jun 13 2026 09:18:51    telegram-userbot    2026-06-13 02:18:51 [ERROR] Gagal forward ke Saved Messages: The specified message ID is invalid or you can't do that operation on such message (caused by ForwardMessagesRequest)
+Jun 13 2026 09:18:51    telegram-userbot    2026-06-13 02:18:51 [INFO] 🖼️ [@zYisunshin | 7491706198] gambar diterima, caption: ''
+Jun 13 2026 09:18:51    telegram-userbot    2026-06-13 02:18:51 [INFO] Starting direct file download in chunks of 131072 at 0, stride 131072
+Jun 13 2026 09:18:51    telegram-userbot    2026-06-13 02:18:51 [INFO] File lives in another DC
+Jun 13 2026 09:18:51    telegram-userbot    2026-06-13 02:18:51 [INFO] Connecting to 91.108.56.197:443/TcpFull...
+Jun 13 2026 09:18:53    telegram-userbot    2026-06-13 02:18:53 [INFO] Connection to 91.108.56.197:443/TcpFull complete!
+Jun 13 2026 09:18:53    telegram-userbot    2026-06-13 02:18:53 [INFO] Exporting auth for new borrowed sender in DcOption(id=5, ip_address='91.108.56.197', port=443, ipv6=False, media_only=False, tcpo_only=False, cdn=False, static=False, this_port_only=False, secret=None)
+Jun 13 2026 09:18:54    telegram-userbot    2026-06-13 02:18:54 [INFO] 🖼️ Image downloaded: 77105 bytes
+Jun 13 2026 09:18:54    telegram-userbot    2026-06-13 02:18:54 [INFO] HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+Jun 13 2026 09:18:54    telegram-userbot    2026-06-13 02:18:54 [INFO] 📥 [@zYisunshin | 7491706198] Gambar ini isinya seorang wanita dengan rambut panjang berwarna hitam dan memakai baju berwarna pink...
+Jun 13 2026 09:20:04    telegram-userbot    2026-06-13 02:19:56 [INFO] Got difference for channel 1558739358 updates
