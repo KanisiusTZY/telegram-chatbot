@@ -71,6 +71,7 @@ Penggunaan Tools (Belakang Layar):
 - Gunakan `calculate` jika ada hitungan matematika.
 - Gunakan `set_reminder` jika user minta diingatkan.
 - Gunakan `file_convert` jika user minta ubah format file.
+- WAJIB DIIngat: Ketika kamu perlu memanggil tool, JANGAN PERNAH menulis format seperti `<function=nama_tool>{...}</function>` sebagai teks biasa. Gunakan mekanisme tool calling yang sudah disediakan (function calling API), bukan menuliskannya sebagai bagian dari jawaban.
 
 Jawablah pesan user dengan gaya asik, gaul, akurat, dan seru!"""
 
@@ -165,6 +166,25 @@ def parse_remind_time(time_str: str) -> datetime | None:
 
 # ─── Agent Loop ──────────────────────────────────────────────────────────────
 
+FUNCTION_CALL_PATTERN = re.compile(r'<function=(\w+)>(\{.*?\})</function>', re.DOTALL)
+
+
+def extract_manual_function_call(content: str):
+    """Tangkep tool call yang nyasar ke content sebagai teks, bukan tool_calls field."""
+    if not content:
+        return None, content
+    match = FUNCTION_CALL_PATTERN.search(content)
+    if not match:
+        return None, content
+    func_name = match.group(1)
+    try:
+        func_args = json.loads(match.group(2))
+    except json.JSONDecodeError:
+        func_args = {}
+    clean_content = FUNCTION_CALL_PATTERN.sub('', content).strip()
+    return {"name": func_name, "arguments": func_args}, clean_content
+
+
 def word_count(text: str) -> int:
     return len(text.split())
 
@@ -249,6 +269,27 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
         if choice.finish_reason != "tool_calls":
             reply = choice.message.content or "(gak ada jawaban)"
 
+            # 1. Catch leaked tool call in text content
+            manual_call, clean_reply = extract_manual_function_call(reply)
+            if manual_call:
+                tool_name = manual_call["name"]
+                tool_args = manual_call["arguments"]
+                log.warning(f"⚠️ [agent] Leaked tool call detected in message.content: {tool_name}({tool_args})")
+
+                log.info(f"[agent] Executing caught tool call: {tool_name}({tool_args})")
+                result = execute_tool(user_id, tool_name, tool_args)
+                log.info(f"[agent] result: {result[:200]}")
+
+                if clean_reply:
+                    messages.append({"role": "assistant", "content": clean_reply})
+
+                messages.append({
+                    "role": "user",
+                    "content": f"[Hasil eksekusi tool {tool_name}]:\n{result}\n\nTolong jawab pertanyaan user berdasarkan data di atas secara natural, gaul, dan lengkap."
+                })
+                continue
+
+            # 2. Check uncertainty on turn 0
             uncertainty_kw = [
                 "tidak tahu", "kurang tahu", "tidak memiliki informasi",
                 "tidak tahu pasti", "sebagai ai", "belum tahu", "tidak dapat menemukan",
@@ -263,6 +304,11 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                     "content": f"[Hasil pencarian internet untuk '{user_message}']:\n{search_json}\n\nTolong jawab pertanyaan user berdasarkan data pencarian di atas dengan ramah, akurat, dan lengkap."
                 })
                 continue
+
+            # 3. Safety net filter before final return
+            if "<function=" in reply or "tool_call" in reply.lower():
+                log.warning(f"⚠️ [agent] Unhandled tool leakage blocked: {reply[:200]}")
+                reply = "Waduh, gua lagi mikir keras nih, coba tanya lagi deh wkwk 😅"
 
             agent_db.save_message(user_id, "assistant", reply)
             return reply
