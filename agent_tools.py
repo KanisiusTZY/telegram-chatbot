@@ -46,8 +46,9 @@ TOOLS = [
         "function": {
             "name": "set_reminder",
             "description": (
-                "Simpan pengingat untuk dikirim ke user pada waktu tertentu. "
-                "remind_at harus dalam format ISO-8601 UTC, contoh: '2026-08-05T09:00:00'."
+                "WAJIB panggil tool ini setiap kali user minta pengingat/reminder dalam durasi atau waktu apapun "
+                "(misal '2 detik', '5 menit', '1 jam', 'besok jam 9'). "
+                "bisa menerima string waktu relatif seperti '2 detik', '5 menit', '+10s' atau ISO format."
             ),
             "parameters": {
                 "type": "object",
@@ -58,7 +59,7 @@ TOOLS = [
                     },
                     "remind_at": {
                         "type": "string",
-                        "description": "Waktu pengingat dalam ISO-8601 UTC (YYYY-MM-DDTHH:MM:SS).",
+                        "description": "Waktu pengingat (contoh: '2 detik', '5 menit', '1 jam', '+30s', atau ISO format).",
                     },
                 },
                 "required": ["message", "remind_at"],
