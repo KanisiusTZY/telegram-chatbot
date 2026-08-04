@@ -654,12 +654,12 @@ async def main():
     log.info("🔕 Account status set to offline")
 
     scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(_send_due_reminders, "interval", seconds=30, id="reminder_check",
+    scheduler.add_job(_send_due_reminders, "interval", seconds=5, id="reminder_check",
                       max_instances=1, coalesce=True)
     scheduler.add_job(_keep_offline, "interval", minutes=5, id="keep_offline",
                       max_instances=1, coalesce=True)
     scheduler.start()
-    log.info("⏰ APScheduler started (reminders every 30s, offline reset every 5m)")
+    log.info("⏰ APScheduler started (reminders every 5s, offline reset every 5m)")
 
     log.info("👂 Listening for incoming private messages...")
     try:

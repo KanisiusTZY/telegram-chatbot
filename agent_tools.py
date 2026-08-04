@@ -138,12 +138,46 @@ def _tool_web_search(user_id: int, query: str, max_results: int = 5) -> str:
         return json.dumps({"error": f"Search gagal: {e}"})
 
 
+import re
+from datetime import datetime, timedelta, timezone
+
+
+def parse_flexible_time(time_str: str) -> datetime | None:
+    """Parse relative time strings ('2 detik', '5m', '+30s') or ISO-8601 timestamps."""
+    time_str = time_str.strip()
+
+    m = re.search(r'(\d+)\s*(detik|sec|second|s|menit|min|minute|m|jam|hour|h|hari|day|d)', time_str, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2).lower()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if unit in ['detik', 'sec', 'second', 'seconds', 's']:
+            return now + timedelta(seconds=val)
+        if unit in ['menit', 'min', 'minute', 'minutes', 'm']:
+            return now + timedelta(minutes=val)
+        if unit in ['jam', 'hour', 'hours', 'h']:
+            return now + timedelta(hours=val)
+        if unit in ['hari', 'day', 'days', 'd']:
+            return now + timedelta(days=val)
+
+    remind_at_clean = time_str.replace("Z", "").strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(remind_at_clean, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(remind_at_clean)
+    except ValueError:
+        return None
+
+
 def _tool_set_reminder(user_id: int, message: str, remind_at: str) -> str:
     log.info(f"[tool:set_reminder] user={user_id} remind_at={remind_at!r}")
     try:
-        # Accept both 'T' separator and space
-        remind_at_clean = remind_at.replace("Z", "").strip()
-        dt = datetime.fromisoformat(remind_at_clean)
+        dt = parse_flexible_time(remind_at)
+        if dt is None:
+            return json.dumps({"error": f"Format waktu '{remind_at}' tidak dikenali. Gunakan relatif seperti '5 menit', '30 detik', atau ISO format."})
         rid = agent_db.save_reminder(user_id, message, dt)
         return json.dumps({
             "ok": True,
@@ -151,8 +185,6 @@ def _tool_set_reminder(user_id: int, message: str, remind_at: str) -> str:
             "remind_at": dt.strftime("%Y-%m-%d %H:%M:%S UTC"),
             "message": message,
         })
-    except ValueError as e:
-        return json.dumps({"error": f"Format waktu salah: {e}. Gunakan YYYY-MM-DDTHH:MM:SS"})
     except Exception as e:
         log.error(f"[tool:set_reminder] error: {e}")
         return json.dumps({"error": str(e)})
