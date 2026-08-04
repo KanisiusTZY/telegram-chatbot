@@ -627,8 +627,22 @@ async def cmd_search(event):
     async with client.action(event.chat_id, "typing"):
         from agent_tools import _tool_web_search
         search_res = _tool_web_search(sender.id, query, max_results=5)
-        prompt = f"Tolong jelaskan/rangkum hasil pencarian internet ini untuk pertanyaan '{query}':\n{search_res}"
-        reply = await asyncio.to_thread(run_agent, sender.id, prompt, _no_history_save=True)
+
+        messages = [
+            {"role": "system", "content": "Kamu adalah AI Assistant yang merangkum hasil pencarian internet secara ramah, informatif, jelas, dan rapi dalam bahasa Indonesia."},
+            {"role": "user", "content": f"Tolong rangkum hasil pencarian internet berikut secara jelas dan lengkap untuk pertanyaan/topik '{query}':\n\n{search_res}"}
+        ]
+
+        try:
+            resp = groq_client.chat.completions.create(
+                model=GROQ_FALLBACK_MODEL,
+                messages=messages,
+                max_tokens=1024,
+            )
+            reply = resp.choices[0].message.content or f"🔍 Hasil pencarian untuk '{query}':\n{search_res}"
+        except Exception as e:
+            log.error(f"Search summary error: {e}")
+            reply = f"🔍 Hasil pencarian internet untuk '{query}':\n{search_res}"
 
     await event.reply(reply)
     log.info(f"🔍 /search '{query}' handled for user {sender.id}")

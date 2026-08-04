@@ -121,22 +121,67 @@ TOOLS = [
 
 # ─── Tool Implementations ─────────────────────────────────────────────────────
 
+def _search_ddg_html(query: str, max_results: int = 5) -> list[dict]:
+    import urllib.request
+    import urllib.parse
+    import re
+    import ssl
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+    req = urllib.request.Request(url, headers=headers)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        results = []
+        snippets = re.findall(r'result__snippet[^>]*>(.*?)</a>', html, re.DOTALL)
+        titles = re.findall(r'result__a[^>]*>(.*?)</a>', html, re.DOTALL)
+
+        for t, s in zip(titles, snippets):
+            t_clean = re.sub(r'<[^>]+>', '', t).replace('\n', ' ').strip()
+            s_clean = re.sub(r'<[^>]+>', '', s).replace('\n', ' ').strip()
+            if t_clean and s_clean:
+                results.append({"title": t_clean, "snippet": s_clean})
+                if len(results) >= max_results:
+                    break
+        return results
+    except Exception as e:
+        log.error(f"[html_search] error: {e}")
+        return []
+
+
 def _tool_web_search(user_id: int, query: str, max_results: int = 5) -> str:
     max_results = min(int(max_results), 10)
     log.info(f"[tool:web_search] user={user_id} query={query!r} n={max_results}")
+
+    results = []
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        if not results:
-            return json.dumps({"error": "Gak ada hasil ditemukan."})
-        formatted = [
-            {"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")}
-            for r in results
-        ]
-        return json.dumps(formatted, ensure_ascii=False)
+            raw = list(ddgs.text(query, max_results=max_results))
+        if raw:
+            results = [
+                {"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")}
+                for r in raw
+            ]
     except Exception as e:
-        log.error(f"[tool:web_search] error: {e}")
-        return json.dumps({"error": f"Search gagal: {e}"})
+        log.warning(f"[tool:web_search] DDGS library failed ({e}), trying HTML fallback...")
+
+    if not results:
+        results = _search_ddg_html(query, max_results=max_results)
+
+    if not results:
+        return json.dumps({"error": f"Tidak ada hasil ditemukan untuk '{query}'."})
+
+    return json.dumps(results, ensure_ascii=False)
 
 
 import re
