@@ -116,10 +116,178 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_convert",
+            "description": (
+                "Konversi file yang baru saja dikirim user ke format lain. "
+                "Gunakan setelah user mengirim file dan meminta konversi (misal 'ubah ke PDF', 'jadiin docx', 'jadiin png', 'ekstrak ke txt')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_format": {
+                        "type": "string",
+                        "enum": ["pdf", "docx", "jpg", "png", "txt"],
+                        "description": "Format tujuan konversi (pdf, docx, jpg, png, txt)",
+                    },
+                },
+                "required": ["target_format"],
+            },
+        },
+    },
 ]
 
 
 # ─── Tool Implementations ─────────────────────────────────────────────────────
+
+USER_LAST_FILES: dict[int, dict] = {}
+PENDING_CONVERTED_FILES: dict[int, dict] = {}
+
+
+def set_user_last_file(user_id: int, file_path: str, filename: str, ext: str) -> None:
+    import time
+    USER_LAST_FILES[user_id] = {
+        "path": file_path,
+        "filename": filename,
+        "ext": ext.lower().lstrip("."),
+        "time": time.time(),
+    }
+
+
+def pop_pending_converted_file(user_id: int) -> dict | None:
+    return PENDING_CONVERTED_FILES.pop(user_id, None)
+
+
+def _tool_file_convert(user_id: int, target_format: str) -> str:
+    import os
+    import subprocess
+    import time
+
+    target_format = target_format.lower().lstrip(".")
+    log.info(f"[tool:file_convert] user={user_id} target_format={target_format}")
+
+    file_info = USER_LAST_FILES.get(user_id)
+    if not file_info or not os.path.exists(file_info["path"]):
+        return json.dumps({
+            "error": "Belum ada file yang kamu kirim. Silakan kirim file dulu (DOCX, PDF, JPG, PNG, TXT), baru minta konversi."
+        })
+
+    src_path = file_info["path"]
+    src_filename = file_info["filename"]
+    src_ext = file_info["ext"]
+
+    if src_ext == target_format:
+        return json.dumps({
+            "error": f"File '{src_filename}' sudah dalam format {target_format.upper()}."
+        })
+
+    base_name = os.path.splitext(src_filename)[0]
+    out_filename = f"{base_name}.{target_format}"
+    temp_dir = os.path.dirname(src_path) or "temp_files"
+    out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+
+    try:
+        # 1. Image -> PDF
+        if src_ext in ["jpg", "jpeg", "png", "webp", "bmp"] and target_format == "pdf":
+            from PIL import Image
+            img = Image.open(src_path)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(out_path, "PDF")
+
+        # 2. Image -> Image (JPG / PNG)
+        elif src_ext in ["jpg", "jpeg", "png", "webp", "bmp"] and target_format in ["jpg", "jpeg", "png"]:
+            from PIL import Image
+            img = Image.open(src_path)
+            fmt = "JPEG" if target_format in ["jpg", "jpeg"] else "PNG"
+            if fmt == "JPEG" and img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(out_path, fmt)
+
+        # 3. PDF -> Image (JPG / PNG)
+        elif src_ext == "pdf" and target_format in ["jpg", "jpeg", "png"]:
+            from pdf2image import convert_from_path
+            images = convert_from_path(src_path, first_page=1, last_page=1)
+            if not images:
+                return json.dumps({"error": "Gagal membaca halaman dari file PDF."})
+            fmt = "JPEG" if target_format in ["jpg", "jpeg"] else "PNG"
+            images[0].save(out_path, fmt)
+
+        # 4. PDF -> DOCX
+        elif src_ext == "pdf" and target_format == "docx":
+            from pdf2docx import Converter
+            cv = Converter(src_path)
+            cv.convert(out_path, start=0, end=None)
+            cv.close()
+
+        # 5. DOCX -> PDF
+        elif src_ext in ["docx", "doc"] and target_format == "pdf":
+            converted = False
+            try:
+                cmd = ["soffice", "--headless", "--convert-to", "pdf", "--outdir", temp_dir, src_path]
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
+                lo_out = os.path.join(temp_dir, os.path.splitext(os.path.basename(src_path))[0] + ".pdf")
+                if os.path.exists(lo_out):
+                    os.rename(lo_out, out_path)
+                    converted = True
+            except Exception as e:
+                log.warning(f"[file_convert] LibreOffice conversion warning: {e}")
+
+            if not converted:
+                import docx
+                doc = docx.Document(src_path)
+                full_text = "\n".join([p.text for p in doc.paragraphs if p.text])
+                if not full_text:
+                    return json.dumps({"error": "Dokumen DOCX kosong atau tidak bisa dibaca."})
+                out_txt = os.path.splitext(out_path)[0] + ".txt"
+                with open(out_txt, "w", encoding="utf-8") as f:
+                    f.write(full_text)
+                out_path = out_txt
+                out_filename = base_name + ".txt"
+
+        # 6. PDF / DOCX / Image -> TXT
+        elif target_format == "txt":
+            full_text = ""
+            if src_ext == "pdf":
+                from pypdf import PdfReader
+                reader = PdfReader(src_path)
+                full_text = "\n\n".join([p.extract_text() or "" for p in reader.pages])
+            elif src_ext in ["docx", "doc"]:
+                import docx
+                doc = docx.Document(src_path)
+                full_text = "\n".join([p.text for p in doc.paragraphs])
+            else:
+                full_text = f"Teks dari file {src_filename}"
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(full_text if full_text.strip() else "Tidak ada teks yang dapat diekstrak.")
+
+        else:
+            return json.dumps({
+                "error": f"Konversi dari format .{src_ext} ke .{target_format} belum didukung."
+            })
+
+        if not os.path.exists(out_path):
+            return json.dumps({"error": f"Gagal membuat file hasil konversi {target_format.upper()}."})
+
+        PENDING_CONVERTED_FILES[user_id] = {
+            "out_path": out_path,
+            "out_filename": out_filename,
+            "src_path": src_path,
+        }
+
+        return json.dumps({
+            "ok": True,
+            "out_filename": out_filename,
+            "message": f"Konversi '{src_filename}' ke '{out_filename}' berhasil!",
+        })
+
+    except Exception as e:
+        log.error(f"[file_convert] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal mengonversi file: {e}"})
+
 
 def _search_ddg_html(query: str, max_results: int = 5) -> list[dict]:
     import urllib.request
@@ -282,6 +450,7 @@ _TOOL_MAP = {
     "save_note": _tool_save_note,
     "get_notes": _tool_get_notes,
     "calculate": _tool_calculate,
+    "file_convert": _tool_file_convert,
 }
 
 

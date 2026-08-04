@@ -425,6 +425,22 @@ def _send_due_reminders():
             log.error(f"[scheduler] Failed to deliver reminder {rid}: {e}")
 
 
+def _cleanup_temp_files():
+    """APScheduler job: delete temp files older than 1 hour."""
+    temp_dir = "temp_files"
+    if not os.path.exists(temp_dir):
+        return
+    now = time.time()
+    for fname in os.listdir(temp_dir):
+        fpath = os.path.join(temp_dir, fname)
+        try:
+            if os.path.isfile(fpath) and (now - os.path.getmtime(fpath) > 3600):
+                os.remove(fpath)
+                log.info(f"[cleanup] Deleted old temp file: {fname}")
+        except Exception as e:
+            log.warning(f"[cleanup] Failed to delete {fname}: {e}")
+
+
 # ─── Telegram Userbot ────────────────────────────────────────────────────────
 
 if SESSION_STRING:
@@ -503,6 +519,74 @@ async def handle_private_message(event):
         log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
         return
 
+    # ── Document / File handling ──────────────────────────────────────────
+    is_doc = False
+    if event.message.media and isinstance(event.message.media, MessageMediaDocument):
+        mime = getattr(event.message.file, "mime_type", "") or ""
+        if not mime.startswith("image/"):
+            is_doc = True
+
+    if is_doc:
+        doc_size = getattr(event.message.file, "size", 0) or 0
+        if doc_size > 20 * 1024 * 1024:
+            await event.reply("❌ Ukuran file terlalu besar (maksimal 20 MB). Silakan kirim file yang lebih kecil.")
+            return
+
+        orig_name = getattr(event.message.file, "name", None) or f"file_{user_id}.bin"
+        ext = os.path.splitext(orig_name)[1].lower()
+        ALLOWED_EXTS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".txt"}
+
+        if ext not in ALLOWED_EXTS:
+            await event.reply(
+                f"❌ Format file '{ext}' belum didukung.\n"
+                "Format yang didukung saat ini: **PDF**, **DOCX**, **JPG**, **PNG**, **TXT**."
+            )
+            return
+
+        temp_dir = "temp_files"
+        os.makedirs(temp_dir, exist_ok=True)
+        save_path = os.path.join(temp_dir, f"{user_id}_{int(time.time())}_{orig_name}")
+
+        async with client.action(event.chat_id, "document"):
+            await event.message.download_media(file=save_path)
+            from agent_tools import set_user_last_file
+            set_user_last_file(user_id, save_path, orig_name, ext)
+
+            size_mb = doc_size / (1024 * 1024)
+            caption = event.raw_text.strip()
+            prompt = f"User baru saja mengunggah file dokumen '{orig_name}' ({size_mb:.1f} MB)."
+            if caption:
+                prompt += f" Pesan/instruksi user tentang file ini: {caption}"
+
+            reply = await asyncio.to_thread(run_agent, user_id, prompt, _no_history_save=False)
+
+        await event.reply(
+            f"📄 File **{orig_name}** ({size_mb:.1f} MB) berhasil diterima!\n\n"
+            + reply + "\n\n(Opsi konversi: **PDF**, **DOCX**, **PNG**, **JPG**, **TXT**)"
+        )
+
+        from agent_tools import pop_pending_converted_file
+        pending = pop_pending_converted_file(user_id)
+        if pending:
+            out_path = pending["out_path"]
+            out_filename = pending["out_filename"]
+            src_path = pending.get("src_path")
+
+            log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+            await client.send_file(
+                event.chat_id,
+                out_path,
+                caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
+            )
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+                if src_path and os.path.exists(src_path):
+                    os.remove(src_path)
+            except Exception as e:
+                log.warning(f"Failed to remove temp file: {e}")
+        return
+
     # ── Text handling ─────────────────────────────────────────────────────
     text = event.raw_text.strip()
     if not text or text.startswith("/"):
@@ -515,6 +599,28 @@ async def handle_private_message(event):
 
     await event.reply(reply)
     log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+
+    # Check if a file conversion was triggered by text message (e.g. "ubah ke PDF")
+    from agent_tools import pop_pending_converted_file
+    pending = pop_pending_converted_file(user_id)
+    if pending:
+        out_path = pending["out_path"]
+        out_filename = pending["out_filename"]
+        src_path = pending.get("src_path")
+
+        log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+        await client.send_file(
+            event.chat_id,
+            out_path,
+            caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
+        )
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            if src_path and os.path.exists(src_path):
+                os.remove(src_path)
+        except Exception as e:
+            log.warning(f"Failed to remove temp file: {e}")
 
 
 # ─── Outgoing Commands ────────────────────────────────────────────────────────
@@ -766,8 +872,10 @@ async def main():
                       max_instances=1, coalesce=True)
     scheduler.add_job(_keep_offline, "interval", minutes=5, id="keep_offline",
                       max_instances=1, coalesce=True)
+    scheduler.add_job(_cleanup_temp_files, "interval", minutes=30, id="temp_cleanup",
+                      max_instances=1, coalesce=True)
     scheduler.start()
-    log.info("⏰ APScheduler started (reminders every 5s, offline reset every 5m)")
+    log.info("⏰ APScheduler started (reminders every 5s, offline reset every 5m, temp cleanup every 30m)")
 
     log.info("👂 Listening for incoming private messages...")
     try:

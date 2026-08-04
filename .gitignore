@@ -51,3 +51,6 @@ Thumbs.db
 # Telegram session (jangan di-push ke GitHub!)
 *.session
 *.session-journal
+
+# Temporary user file conversion directory
+temp_files/
