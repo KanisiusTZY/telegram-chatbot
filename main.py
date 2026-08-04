@@ -44,7 +44,7 @@ FLASK_PORT       = int(os.environ.get("PORT", 8099))
 SUMMARIZE_WORD_LIMIT  = 200
 AGENT_MAX_ITERATIONS  = 5   # max tool-call rounds per user message
 HISTORY_WINDOW        = 10  # messages sent to model per turn
-RATE_LIMIT_CALLS      = 20  # max messages per user per window
+RATE_LIMIT_CALLS      = 60  # max messages per user per window
 RATE_LIMIT_WINDOW     = 60  # seconds
 
 # ─── AI Client ──────────────────────────────────────────────────────────────
@@ -197,6 +197,25 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
 
     for iteration in range(AGENT_MAX_ITERATIONS):
         log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS}")
+
+        # Auto web_search context injection for short entity/factual queries on turn 0
+        if iteration == 0:
+            clean_msg = user_message.strip()
+            words = clean_msg.split()
+            msg_lower = clean_msg.lower()
+            common_greetings = {"p", "ping", "hi", "halo", "hello", "tes", "test", "hei", "ok", "oke", "sip", "iya", "ga", "nggak", "tidak", "apa", "kenapa"}
+
+            if 1 <= len(words) <= 5 and msg_lower not in common_greetings:
+                log.info(f"[agent] Short query detected ('{clean_msg}'), auto-fetching web_search context...")
+                try:
+                    search_json = execute_tool(user_id, "web_search", {"query": clean_msg})
+                    if "error" not in search_json.lower():
+                        messages.append({
+                            "role": "user",
+                            "content": f"[Data internet terbaru tentang '{clean_msg}']:\n{search_json}\n\nGunakan data internet di atas untuk menjawab pertanyaan user dengan gaul, akurat, dan lengkap."
+                        })
+                except Exception as e:
+                    log.warning(f"[agent] Auto web_search context injection failed: {e}")
 
         response = None
         current_model = GROQ_MODEL
