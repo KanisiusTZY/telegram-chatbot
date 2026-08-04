@@ -503,7 +503,7 @@ async def handle_private_message(event):
 
     # ── Text handling ─────────────────────────────────────────────────────
     text = event.raw_text.strip()
-    if not text:
+    if not text or text.startswith("/"):
         return
 
     log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
