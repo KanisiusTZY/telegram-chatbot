@@ -1,0 +1,19 @@
+Saya punya project Telegram bot di main.py yang jalan pakai Telethon (userbot, login via session string) + Groq (llama-3.3-70b-versatile untuk teks, llama-4-scout-17b-16e-instruct untuk vision) + Flask keep-alive. Saat ini sifatnya cuma chatbot: terima pesan → satu kali call ke LLM → balas. History disimpan di dict in-memory (histories) dan hilang tiap restart.
+
+Saya mau upgrade ini jadi AI agent beneran, bukan sekadar chatbot. Tolong bantu implementasikan perubahan berikut, langkah demi langkah, dan jelasin tiap perubahan besar sebelum eksekusi:
+
+1. Tool calling / function calling
+Tambahkan daftar tools yang bisa dipanggil model lewat Groq tool calling (tools=[...] di chat.completions.create), minimal:
+web_search(query) — cari info terkini di internet (pakai library search API yang tersedia gratis/simple, misal DuckDuckGo instant answer atau serper.dev kalau saya kasih API key)
+set_reminder(user_id, message, remind_at) — simpan reminder buat dikirim ulang ke user di waktu tertentu
+save_note(user_id, content) dan get_notes(user_id) — catatan personal per user
+calculate(expression) — evaluasi matematika sederhana secara aman (jangan pakai eval() mentah, pakai library aman seperti simpleeval)
+Setiap tool harus punya JSON schema yang jelas (name, description, parameters) sesuai format tool calling Groq/OpenAI.
+2. Agent loop (bukan cuma satu kali call)
+Ganti get_ai_reply() jadi loop: kirim pesan ke model → kalau model minta manggil tool, jalankan tool-nya → kirim hasil tool balik ke model sebagai tool role message → ulangi sampai model kasih jawaban final teks (bukan tool call lagi).
+Batasi maksimal iterasi loop (misal 5x) biar gak infinite loop kalau model nyasar.
+Tetap pertahankan kepribadian di SYSTEM_PROMPT yang sekarang (males/sarkastis), tapi tambahin instruksi singkat soal kapan dia harus pakai tools vs jawab langsung.
+3. Memori persisten
+Ganti histories: dict in-memory jadi database SQLite lokal (file .db), pakai sqlite3 bawaan Python atau sqlmodel/sqlalchemy kalau lebih gampang.
+Tabel minimal: messages (user_id, role, content, timestamp), notes (user_id, content, created_at), reminders (user_id, message, remind_at, sent boolean).
+History tetap dibatasi N pesan terakhir saat dikirim ke model (biar hemat token), tapi datanya disimpan permanen di DB.

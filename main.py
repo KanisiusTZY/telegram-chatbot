@@ -5,14 +5,17 @@ import logging
 import time
 import base64
 import io
+import json
 from datetime import datetime
-from collections import defaultdict
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument
 from groq import Groq
 from flask import Flask
+
+import agent_db
+from agent_tools import TOOLS, execute_tool
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -30,9 +33,10 @@ API_HASH = os.environ["TELEGRAM_API_HASH"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 SESSION_STRING = os.environ.get("SESSION_STRING")
 SESSION_FILE = "session"
-MAX_HISTORY = 10
 SUMMARIZE_WORD_LIMIT = 200
 FLASK_PORT = 8099
+AGENT_MAX_ITERATIONS = 5  # max tool-call rounds per message
+HISTORY_WINDOW = 10       # messages sent to model per turn
 
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
@@ -59,66 +63,112 @@ Contoh gaya:
 - "...serius? itu pertanyaannya?"
 - "iya bisa, tapi kenapa lo nanya ke gua"
 
+Kapan pakai tools vs jawab langsung:
+- Pakai web_search kalau nanya soal berita terkini, harga, cuaca, atau hal yang mungkin udah berubah
+- Pakai calculate kalau ada hitungan matematika eksplisit
+- Pakai save_note / get_notes kalau user minta simpan atau lihat catatan
+- Pakai set_reminder kalau user minta diingatkan sesuatu di waktu tertentu
+- Jawab langsung kalau pertanyaannya umum dan lo yakin jawabannya
+
 Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
 
-# ─── Conversation History ────────────────────────────────────────────────────
 
-# {user_id: [{"role": "user"/"assistant", "content": "..."}]}
-histories: dict = defaultdict(list)
-
-
-def add_to_history(user_id: int, role: str, content: str) -> None:
-    histories[user_id].append({"role": role, "content": content})
-    if len(histories[user_id]) > MAX_HISTORY:
-        histories[user_id] = histories[user_id][-MAX_HISTORY:]
-
-
-def clear_history(user_id: int) -> None:
-    histories[user_id] = []
-
+# ─── Agent Loop ──────────────────────────────────────────────────────────────
 
 def word_count(text: str) -> int:
     return len(text.split())
 
 
-# ─── AI Reply ───────────────────────────────────────────────────────────────
-
-def get_ai_reply(user_id: int, user_message: str) -> str:
+def run_agent(user_id: int, user_message: str) -> str:
+    """
+    Full agent loop:
+      1. Save user message to DB
+      2. Load recent history from DB
+      3. Call model → if tool_calls → execute → feed results back → repeat
+      4. Return final text answer
+    """
     if word_count(user_message) > SUMMARIZE_WORD_LIMIT:
         user_message = (
             f"[Pesan panjang — tolong ringkas dan jawab inti pertanyaannya]\n\n{user_message}"
         )
 
-    add_to_history(user_id, "user", user_message)
+    agent_db.save_message(user_id, "user", user_message)
+    history = agent_db.load_history(user_id, limit=HISTORY_WINDOW)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + histories[user_id]
+    # Build initial messages list for this turn
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                max_tokens=1024,
-            )
-            reply = response.choices[0].message.content
-            add_to_history(user_id, "assistant", reply)
-            return reply
-        except Exception as e:
-            err_str = str(e)
-            is_retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
-            if is_retriable and attempt < max_retries - 1:
-                wait = 2 ** attempt
-                log.warning(f"Groq error, retry {attempt + 1}/{max_retries} in {wait}s...")
-                time.sleep(wait)
-                continue
-            log.error(f"Groq API error: {e}")
-            if histories[user_id] and histories[user_id][-1]["role"] == "user":
-                histories[user_id].pop()
+
+    for iteration in range(AGENT_MAX_ITERATIONS):
+        log.info(f"[agent] user={user_id} iteration={iteration + 1}/{AGENT_MAX_ITERATIONS}")
+
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    max_tokens=1024,
+                )
+                break
+            except Exception as e:
+                err_str = str(e)
+                is_retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
+                if is_retriable and attempt < max_retries - 1:
+                    wait = 2 ** attempt
+                    log.warning(f"Groq error, retry {attempt + 1}/{max_retries} in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    log.error(f"Groq API error: {e}")
+                    # Roll back the user message we already saved
+                    return "Ada error nih dari AI-nya, coba lagi ya"
+
+        if response is None:
             return "Ada error nih dari AI-nya, coba lagi ya"
+
+        choice = response.choices[0]
+        finish_reason = choice.finish_reason
+
+        # ── Final text answer ──────────────────────────────────────────────
+        if finish_reason != "tool_calls":
+            reply = choice.message.content or "(gak ada jawaban)"
+            agent_db.save_message(user_id, "assistant", reply)
+            return reply
+
+        # ── Tool call(s) requested ─────────────────────────────────────────
+        assistant_msg = choice.message
+        # Append assistant message (with tool_calls) to the running context
+        messages.append(assistant_msg)
+
+        tool_calls = assistant_msg.tool_calls or []
+        for tc in tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            log.info(f"[agent] tool_call: {tool_name}({tool_args})")
+            result = execute_tool(user_id, tool_name, tool_args)
+            log.info(f"[agent] tool_result: {result[:200]}")
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            })
+
+    # Exhausted max iterations without a final answer
+    fallback = "Hmm, gua nyoba terus tapi gak kelar-kelar. Coba tanya ulang dengan lebih spesifik."
+    agent_db.save_message(user_id, "assistant", fallback)
+    return fallback
 
 
 def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> str:
+    """Vision call — stays as a single-shot call (no tools for images)."""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     prompt_text = caption if caption else "Gambar ini isinya apa?"
 
@@ -142,8 +192,8 @@ def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> s
                 max_tokens=1024,
             )
             reply = response.choices[0].message.content
-            add_to_history(user_id, "user", f"[Kirim gambar] {prompt_text}")
-            add_to_history(user_id, "assistant", reply)
+            agent_db.save_message(user_id, "user", f"[Kirim gambar] {prompt_text}")
+            agent_db.save_message(user_id, "assistant", reply)
             return reply
         except Exception as e:
             err_str = str(e)
@@ -174,6 +224,38 @@ def health():
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False)
+
+
+# ─── Reminder Daemon ─────────────────────────────────────────────────────────
+
+def run_reminder_daemon(tg_client: TelegramClient, loop: asyncio.AbstractEventLoop):
+    """
+    Background thread: polls for due reminders every 30 seconds and
+    sends them via Telegram using the running event loop.
+    """
+    log.info("⏰ Reminder daemon started")
+    while True:
+        time.sleep(30)
+        try:
+            due = agent_db.get_due_reminders()
+            for reminder in due:
+                rid = reminder["id"]
+                user_id = reminder["user_id"]
+                message = reminder["message"]
+                log.info(f"⏰ Sending reminder {rid} to user {user_id}")
+                text = f"🔔 Reminder: {message}"
+                future = asyncio.run_coroutine_threadsafe(
+                    tg_client.send_message(user_id, text),
+                    loop,
+                )
+                try:
+                    future.result(timeout=15)
+                    agent_db.mark_reminder_sent(rid)
+                    log.info(f"⏰ Reminder {rid} sent and marked as done")
+                except Exception as send_err:
+                    log.error(f"⏰ Failed to send reminder {rid}: {send_err}")
+        except Exception as e:
+            log.error(f"⏰ Reminder daemon error: {e}", exc_info=True)
 
 
 # ─── Telegram Userbot ────────────────────────────────────────────────────────
@@ -242,7 +324,7 @@ async def handle_private_message(event):
     log.info(f"📥 [{username} | {user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
 
     async with client.action(event.chat_id, "typing"):
-        reply = await asyncio.to_thread(get_ai_reply, user_id, text)
+        reply = await asyncio.to_thread(run_agent, user_id, text)
 
     await event.reply(reply)
     log.info(f"📤 [{username} | {user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
@@ -256,7 +338,7 @@ async def handle_clear_command(event):
     peer = await event.get_chat()
     if isinstance(peer, User):
         target_user_id = peer.id
-        clear_history(target_user_id)
+        agent_db.clear_history(target_user_id)
         await event.delete()
         await client.send_message(peer.id, "🗑️ History percakapan direset!")
         log.info(f"🗑️ History cleared for user {target_user_id}")
@@ -265,7 +347,10 @@ async def handle_clear_command(event):
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 async def main():
-    log.info("🚀 Starting Telegram Userbot...")
+    log.info("🚀 Starting Telegram Userbot (agent mode)...")
+
+    agent_db.init_db()
+    log.info("🗄️ SQLite DB initialized")
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
@@ -274,8 +359,15 @@ async def main():
     await client.start()
     me = await client.get_me()
     log.info(f"✅ Logged in as: {me.first_name} (@{me.username}) | ID: {me.id}")
-    log.info("👂 Listening for incoming private messages...")
 
+    loop = asyncio.get_event_loop()
+    reminder_thread = threading.Thread(
+        target=run_reminder_daemon, args=(client, loop), daemon=True
+    )
+    reminder_thread.start()
+    log.info("⏰ Reminder daemon started")
+
+    log.info("👂 Listening for incoming private messages...")
     await client.run_until_disconnected()
 
 

@@ -10,4 +10,6 @@ dependencies = [
     "groq>=1.4.0",
     "sift-stack-py>=0.16.2",
     "telethon>=1.43.2",
+    "duckduckgo-search>=6.0.0",
+    "simpleeval>=0.9.13",
 ]
