@@ -36,11 +36,6 @@ TOOLS = [
                         "type": "string",
                         "description": "Query pencarian dalam bahasa Indonesia atau Inggris.",
                     },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Jumlah hasil yang dikembalikan (default 5, max 10).",
-                        "default": 5,
-                    },
                 },
                 "required": ["query"],
             },

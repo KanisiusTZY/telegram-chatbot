@@ -12,7 +12,9 @@ import threading
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = "agent.db"
+import os
+
+DB_PATH = os.environ.get("DB_PATH", "agent.db")
 MAX_HISTORY = 20  # rows stored; trimmed on insert
 
 _local = threading.local()

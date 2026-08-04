@@ -39,7 +39,7 @@ API_HASH         = os.environ["TELEGRAM_API_HASH"]
 GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
 SESSION_STRING   = os.environ.get("SESSION_STRING")
 SESSION_FILE     = "session"
-FLASK_PORT       = 8099
+FLASK_PORT       = int(os.environ.get("PORT", 8099))
 
 SUMMARIZE_WORD_LIMIT  = 200
 AGENT_MAX_ITERATIONS  = 5   # max tool-call rounds per user message
@@ -230,6 +230,20 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                     wait = 2 ** attempt
                     log.warning(f"Groq retry {attempt + 1}/{max_retries} in {wait}s: {e}")
                     time.sleep(wait)
+                elif "tool_use_failed" in err_str or "invalid_request_error" in err_str:
+                    log.warning(f"Groq tool call failed ({e}), falling back to direct text completion...")
+                    try:
+                        fallback_resp = groq_client.chat.completions.create(
+                            model=GROQ_MODEL,
+                            messages=messages,
+                            max_tokens=1024,
+                        )
+                        reply = fallback_resp.choices[0].message.content or "(gak ada jawaban)"
+                        agent_db.save_message(user_id, "assistant", reply)
+                        return reply
+                    except Exception as fb_err:
+                        log.error(f"Groq fallback error: {fb_err}")
+                        return "Ada error nih dari AI-nya, coba lagi ya"
                 else:
                     log.error(f"Groq API error: {e}")
                     return "Ada error nih dari AI-nya, coba lagi ya"
@@ -640,7 +654,10 @@ async def main():
     flask_thread.start()
     log.info(f"🌐 Flask keep-alive on port {FLASK_PORT}")
 
-    await client.start()
+    await client.connect()
+    if not await client.is_user_authorized():
+        log.error("❌ Session tidak terautentikasi! Silakan jalankan generate_session.py di lokal terlebih dahulu.")
+        return
     me = await client.get_me()
     log.info(f"✅ Logged in as: {me.first_name} (@{me.username}) | ID: {me.id}")
 
