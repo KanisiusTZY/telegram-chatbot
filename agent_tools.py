@@ -226,28 +226,27 @@ def _tool_file_convert(user_id: int, target_format: str) -> str:
 
         # 5. DOCX -> PDF
         elif src_ext in ["docx", "doc"] and target_format == "pdf":
-            converted = False
-            try:
-                cmd = ["soffice", "--headless", "--convert-to", "pdf", "--outdir", temp_dir, src_path]
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
-                lo_out = os.path.join(temp_dir, os.path.splitext(os.path.basename(src_path))[0] + ".pdf")
-                if os.path.exists(lo_out):
-                    os.rename(lo_out, out_path)
-                    converted = True
-            except Exception as e:
-                log.warning(f"[file_convert] LibreOffice conversion warning: {e}")
+            import docx
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
 
-            if not converted:
-                import docx
-                doc = docx.Document(src_path)
-                full_text = "\n".join([p.text for p in doc.paragraphs if p.text])
-                if not full_text:
-                    return json.dumps({"error": "Dokumen DOCX kosong atau tidak bisa dibaca."})
-                out_txt = os.path.splitext(out_path)[0] + ".txt"
-                with open(out_txt, "w", encoding="utf-8") as f:
-                    f.write(full_text)
-                out_path = out_txt
-                out_filename = base_name + ".txt"
+            doc = docx.Document(src_path)
+            styles = getSampleStyleSheet()
+            doc_pdf = SimpleDocTemplate(out_path, pagesize=letter)
+            story = []
+
+            for p in doc.paragraphs:
+                txt = p.text.strip()
+                if txt:
+                    txt_clean = txt.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    story.append(Paragraph(txt_clean, styles['Normal']))
+                    story.append(Spacer(1, 6))
+
+            if story:
+                doc_pdf.build(story)
+            else:
+                return json.dumps({"error": "Dokumen DOCX tidak berisi teks yang dapat dikonversi ke PDF."})
 
         # 6. PDF / DOCX / Image -> TXT
         elif target_format == "txt":

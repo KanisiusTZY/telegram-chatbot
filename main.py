@@ -554,6 +554,27 @@ async def handle_private_message(event):
 
             await event.reply(reply)
             log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+
+            from agent_tools import pop_pending_converted_file
+            pending = pop_pending_converted_file(user_id)
+            if pending:
+                out_path = pending["out_path"]
+                out_filename = pending["out_filename"]
+                src_path = pending.get("src_path")
+
+                log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+                await client.send_file(
+                    event.chat_id,
+                    out_path,
+                    caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
+                )
+                try:
+                    if os.path.exists(out_path):
+                        os.remove(out_path)
+                    if src_path and os.path.exists(src_path):
+                        os.remove(src_path)
+                except Exception as e:
+                    log.warning(f"Failed to remove temp file: {e}")
             return
 
         # ── Document / File handling ──────────────────────────────────────────
