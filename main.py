@@ -57,25 +57,20 @@ GROQ_VISION_MODEL   = "llama-3.2-11b-vision-preview"
 SYSTEM_PROMPT = """Kamu adalah teman ngobrol & AI Assistant pribadi yang super gaul, asik, cerdas, dan responsif!
 
 Watak & Gaya Bahasa:
-- Gaul, santai, asik, dan alami layaknya anak muda / teman tongkrongan Indonesia (pakai gaya bahasa santai seperti "gua/lu" atau "aku/kamu", "wkwk", "gass", "mabar", dll).
-- Paham bahasa gaul, slang internet, & istilah game/pop culture Indonesia:
-  * "epep" / "ff" = Free Fire
-  * "ml" / "mlbb" = Mobile Legends
-  * "pubg" = PUBG Mobile
-  * "mabar" = main bareng
-  * "gass", "gacor", "slebew", "bucin", "wkwk", "parah", dll.
-- JANGAN PERNAH kaku seperti robot (DILARANG ngomong: "Saya tidak mengerti...", "Mohon jelaskan lagi...", "Apakah kamu ingin melakukan pencarian dengan web_search?").
-- DILARANG KERAS menyebutkan nama fungsi/tool internal seperti "web_search", "calculate", "set_reminder", "file_convert" ke user! Itu rahasia sistem di belakang layar.
+- Gaul, santai, asik, dan alami layaknya anak muda / teman tongkrongan Indonesia (pakai bahasa santai "gua/lu", "wkwk", "gass", "mabar", "anjir", dll).
+- Paham bahasa gaul, celetukan, umpatan tongkrongan (seperti "lu kontol", "anjir", "goblok", "asuu", "lawak"), slang internet, & istilah game Indonesia.
+- Jawablah celetukan/umpatan tongkrongan dengan santai, bercanda, dan kocak! (Contoh: "Bagas banget mulut lu bro wkwk", "Biasa aja dong bro, emosi amat wkwk").
+- JANGAN PERNAH kaku seperti robot, dan DILARANG KERAS menyebutkan nama fungsi/tool internal seperti "web_search", "calculate", "set_reminder", "file_convert" ke user!
 
 Cara Merespons Chat:
-- Jika diajak mabar game (misal "epep yok", "mabar ml"), jawab dengan antusias & kocak (contoh: "Gass mabar Free Fire! Tapi btw gua kan AI bot bro, belum punya HP buat mabar wkwk. Ajak temen tongkrongan lu gih!").
-- Berikan jawaban yang santai, asik, cerdas, dan to-the-point.
+- Ngobrol biasa dan santai layaknya teman nyata. JANGAN PERNAH mencari internet untuk umpatan, kata kasar, atau obrolan santai biasa!
+- Hanya gunakan `web_search` jika user menanyakan informasi fakta, berita, harga, atau topik pengetahuan yang benar-benar membutuhkan data internet.
 
-Penggunaan Tools (Berjalan di Belakang Layar):
-- WAJIB panggil `web_search` jika user menanyakan fakta, istilah, singkatan, nama tim/organisasi/tokoh/game/esport (seperti BTR, RRQ, EVOS, dll), berita, harga crypto/saham, cuaca, atau topik yang membutuhkan data internet. JANGAN MENEBAK tanpa web_search!
-- WAJIB panggil `calculate` untuk hitungan matematika.
-- WAJIB panggil `set_reminder` jika user minta diingatkan dalam durasi/waktu apa pun.
-- WAJIB panggil `file_convert` jika user minta ubah format file.
+Penggunaan Tools (Belakang Layar):
+- Gunakan `web_search` hanya jika user menanyakan fakta/berita/pengetahuan terbaru.
+- Gunakan `calculate` jika ada hitungan matematika.
+- Gunakan `set_reminder` jika user minta diingatkan.
+- Gunakan `file_convert` jika user minta ubah format file.
 
 Jawablah pesan user dengan gaya asik, gaul, akurat, dan seru!"""
 
@@ -197,37 +192,6 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
 
     for iteration in range(AGENT_MAX_ITERATIONS):
         log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS}")
-
-        # Auto web_search context injection for short entity/factual queries on turn 0
-        if iteration == 0:
-            clean_msg = user_message.strip()
-            words = clean_msg.split()
-            msg_lower = clean_msg.lower()
-
-            conversational_kw = {
-                "p", "ping", "hi", "halo", "hello", "tes", "test", "hei", "ok", "oke", "sip",
-                "iya", "ga", "gak", "nggak", "tidak", "apa", "kenapa", "wkwk", "wkwkwk",
-                "lama bgt", "lama banget", "lemot", "lemot bgt", "lelet", "cepet bgt",
-                "parah", "parah bgt", "kocak", "kocak bgt", "jir", "anjir", "gokil", "gokil bgt",
-                "mantap", "mantul", "makasih", "makasi", "thanks", "thx", "yoi", "ngawur", "salah"
-            }
-
-            is_conversational = (
-                msg_lower in conversational_kw
-                or any(cw in msg_lower for cw in ["lama bgt", "lama banget", "lemot", "gokil", "kocak", "wkwk", "anjir", "makasih", "makasi", "parah"])
-            )
-
-            if 1 <= len(words) <= 5 and not is_conversational:
-                log.info(f"[agent] Short query detected ('{clean_msg}'), auto-fetching web_search context...")
-                try:
-                    search_json = execute_tool(user_id, "web_search", {"query": clean_msg})
-                    if "error" not in search_json.lower():
-                        messages.append({
-                            "role": "user",
-                            "content": f"[Data internet terbaru tentang '{clean_msg}']:\n{search_json}\n\nGunakan data internet di atas untuk menjawab pertanyaan user dengan santai, gaul, akurat, dan lengkap."
-                        })
-                except Exception as e:
-                    log.warning(f"[agent] Auto web_search context injection failed: {e}")
 
         response = None
         current_model = GROQ_MODEL
