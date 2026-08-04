@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument
+from telethon.tl.functions.account import UpdateStatusRequest
 from groq import Groq
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -353,6 +354,21 @@ _tg_client: TelegramClient | None = None
 _tg_loop: asyncio.AbstractEventLoop | None = None
 
 
+def _keep_offline():
+    """APScheduler job: force account status to offline every 5 minutes."""
+    if _tg_client is None or _tg_loop is None:
+        return
+    future = asyncio.run_coroutine_threadsafe(
+        _tg_client(UpdateStatusRequest(offline=True)),
+        _tg_loop,
+    )
+    try:
+        future.result(timeout=10)
+        log.debug("[scheduler] Status set to offline")
+    except Exception as e:
+        log.warning(f"[scheduler] Failed to set offline status: {e}")
+
+
 def _send_due_reminders():
     """APScheduler job: send all due reminders via Telegram."""
     if _tg_client is None or _tg_loop is None:
@@ -568,11 +584,17 @@ async def main():
     _tg_client = client
     _tg_loop   = asyncio.get_event_loop()
 
+    # Set account offline immediately after login
+    await client(UpdateStatusRequest(offline=True))
+    log.info("🔕 Account status set to offline")
+
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(_send_due_reminders, "interval", seconds=30, id="reminder_check",
                       max_instances=1, coalesce=True)
+    scheduler.add_job(_keep_offline, "interval", minutes=5, id="keep_offline",
+                      max_instances=1, coalesce=True)
     scheduler.start()
-    log.info("⏰ APScheduler started (reminder check every 30s)")
+    log.info("⏰ APScheduler started (reminders every 30s, offline reset every 5m)")
 
     log.info("👂 Listening for incoming private messages...")
     try:
