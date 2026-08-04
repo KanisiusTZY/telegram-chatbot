@@ -547,6 +547,12 @@ def check_and_trigger_direct_conversion(user_id: int, text_content: str) -> bool
     if not text_content:
         return False
     txt = text_content.strip().lower()
+
+    # Exclude complaints/negations
+    negation_keywords = ["gak", "ga ", "g ", "nggak", "tidak", "gabisa", "gisa", "gbs", "kenapa", "kok", "mana"]
+    if any(neg in txt for neg in negation_keywords):
+        return False
+
     conv_keywords = ["ubah", "jadiin", "konversi", "convert", "ke pdf", "ke docx", "ke png", "ke jpg", "ke txt", "jadikan"]
     if not any(kw in txt for kw in conv_keywords):
         return False
@@ -566,7 +572,8 @@ def check_and_trigger_direct_conversion(user_id: int, text_content: str) -> bool
     if target_format:
         from agent_tools import execute_tool
         log.info(f"[auto_convert] Direct conversion triggered for user={user_id} target_format={target_format}")
-        execute_tool(user_id, "file_convert", {"target_format": target_format})
+        res = execute_tool(user_id, "file_convert", {"target_format": target_format})
+        log.info(f"[auto_convert] execute_tool result: {res}")
         return True
     return False
 
@@ -672,8 +679,6 @@ async def handle_private_message(event):
                 try:
                     if os.path.exists(out_path):
                         os.remove(out_path)
-                    if src_path and os.path.exists(src_path):
-                        os.remove(src_path)
                 except Exception as e:
                     log.warning(f"Failed to remove temp file: {e}")
             return
@@ -740,8 +745,6 @@ async def handle_private_message(event):
                 try:
                     if os.path.exists(out_path):
                         os.remove(out_path)
-                    if src_path and os.path.exists(src_path):
-                        os.remove(src_path)
                 except Exception as e:
                     log.warning(f"Failed to remove temp file: {e}")
             return
@@ -778,8 +781,6 @@ async def handle_private_message(event):
             try:
                 if os.path.exists(out_path):
                     os.remove(out_path)
-                if src_path and os.path.exists(src_path):
-                    os.remove(src_path)
             except Exception as e:
                 log.warning(f"Failed to remove temp file: {e}")
         elif triggered:
