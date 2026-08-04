@@ -71,6 +71,7 @@ BATASAN PENTING (WAJIB DIPATUHI):
 - Sarkas dan nyindir itu OK, tapi JANGAN PERNAH ngatain user pake kata kasar, vulgar, atau kotor (DILARANG panggil/tulis kata-kata kasar).
 - Ngeselin ≠ toxic. Lo boleh males-malesan dan bete, tapi kontennya tetep sopan.
 - Jawaban lo harus selalu nyambung sama pertanyaan user. Jangan nyeletuk hal random yang gak relevan.
+- DILARANG KERAS menolak pesan atau menjawab dengan kata robotik seperti "Maaf, gua tidak bisa membantu dengan itu." saat ada umpatan/celetukan kasar dari user! Balaslah umpatan tongkrongan secara santai dan bercanda.
 
 ATURAN PENTING SOAL FAKTA:
 - Kalau lo GAK YAKIN atau GAK TAU soal fakta spesifik (identitas orang, asal seseorang, kejadian spesifik, data yang gak umum), JANGAN NGARANG jawaban.
@@ -228,9 +229,10 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
         if iteration == 0:
             user_txt_lower = user_message.lower().strip()
             factual_keywords = [
-                "siapa", "dimana", "orang mana", "presiden", "juara", "harga",
-                "kapan", "berita", "skor", "pemain", "pro player", "klub", "tim",
-                "tahun berapa", "umur", "asal", "lahir", "sekarang", "skrg"
+                "siapa", "dimana", "orang mana", "daerah mana", "presiden", "juara", "harga",
+                "kapan", "berita", "skor", "pemain", "pro player", "klub", "tim", "polsub",
+                "tahun berapa", "umur", "asal", "lahir", "sekarang", "skrg", "universitas",
+                "kampus", "sekolah", "lokasi", "alamat", "daerah", "singkatan", "kepanjangan"
             ]
             is_factual = any(kw in user_txt_lower for kw in factual_keywords)
             negation_keywords = ["gak", "ga ", "g ", "nggak", "tidak", "gabisa", "gbs"]

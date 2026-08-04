@@ -328,29 +328,71 @@ def _search_ddg_html(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
+def _search_wikipedia(query: str, max_results: int = 3) -> list[dict]:
+    import urllib.request
+    import urllib.parse
+    import json
+    import re
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    url = "https://id.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(query) + "&format=json"
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = []
+            for item in data.get("query", {}).get("search", [])[:max_results]:
+                title = item.get("title", "")
+                snippet = re.sub(r'<[^>]+>', '', item.get("snippet", "")).strip()
+                if title and snippet:
+                    results.append({"title": title, "snippet": snippet, "url": f"https://id.wikipedia.org/wiki/{urllib.parse.quote(title)}"})
+            return results
+    except Exception as e:
+        log.warning(f"[wiki_search] error: {e}")
+        return []
+
+
 def _tool_web_search(user_id: int, query: str, max_results: int = 5) -> str:
     max_results = min(int(max_results), 10)
     log.info(f"[tool:web_search] user={user_id} query={query!r} n={max_results}")
 
     results = []
+
+    # 1. Try Wikipedia API (full query or clean core keywords like 'polsub')
+    wiki_results = _search_wikipedia(query, max_results=3)
+    if not wiki_results and len(query.split()) > 1:
+        clean_words = [
+            w for w in query.split()
+            if w.lower() not in ["daerah", "mana", "apa", "itu", "siapa", "universitas", "kampus", "lokasi", "alamat"]
+        ]
+        if clean_words:
+            wiki_results = _search_wikipedia(" ".join(clean_words), max_results=3)
+
+    if wiki_results:
+        results.extend(wiki_results)
+
+    # 2. Try DDGS library
     try:
         with DDGS() as ddgs:
             raw = list(ddgs.text(query, max_results=max_results))
         if raw:
-            results = [
-                {"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")}
-                for r in raw
-            ]
+            for r in raw:
+                t = r.get("title", "")
+                b = r.get("body", "")
+                if t and b and not any(kw in t.lower() for kw in ["thesaurus", "antonym", "synonym"]):
+                    results.append({"title": t, "snippet": b, "url": r.get("href", "")})
     except Exception as e:
-        log.warning(f"[tool:web_search] DDGS library failed ({e}), trying HTML fallback...")
+        log.warning(f"[tool:web_search] DDGS library failed ({e})")
 
+    # 3. Try HTML fallback if still empty
     if not results:
         results = _search_ddg_html(query, max_results=max_results)
 
     if not results:
         return json.dumps({"error": f"Tidak ada hasil ditemukan untuk '{query}'."})
 
-    return json.dumps(results, ensure_ascii=False)
+    return json.dumps(results[:max_results], ensure_ascii=False)
 
 
 import re
