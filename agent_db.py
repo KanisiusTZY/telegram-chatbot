@@ -32,6 +32,7 @@ def _conn() -> sqlite3.Connection:
 def init_db() -> None:
     """Create tables if they don't exist."""
     c = _conn()
+    init_ai_prefs(c)
     c.executescript("""
         CREATE TABLE IF NOT EXISTS messages (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,4 +175,62 @@ def get_due_reminders(now: Optional[datetime] = None) -> list[dict]:
 def mark_reminder_sent(reminder_id: int) -> None:
     c = _conn()
     c.execute("UPDATE reminders SET sent = 1 WHERE id = ?", (reminder_id,))
+    c.commit()
+
+
+# ─── AI Enable/Disable ────────────────────────────────────────────────────────
+
+def init_ai_prefs(c_conn) -> None:
+    """Called from init_db — creates tables for AI on/off state."""
+    c_conn.executescript("""
+        CREATE TABLE IF NOT EXISTS user_ai_prefs (
+            user_id    INTEGER PRIMARY KEY,
+            ai_enabled INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS global_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        INSERT OR IGNORE INTO global_settings (key, value)
+        VALUES ('ai_enabled', '1');
+    """)
+    c_conn.commit()
+
+
+def is_ai_enabled_global() -> bool:
+    c = _conn()
+    row = c.execute(
+        "SELECT value FROM global_settings WHERE key = 'ai_enabled'"
+    ).fetchone()
+    return row is None or row["value"] == "1"
+
+
+def set_ai_enabled_global(enabled: bool) -> None:
+    c = _conn()
+    c.execute(
+        "INSERT OR REPLACE INTO global_settings (key, value) VALUES ('ai_enabled', ?)",
+        ("1" if enabled else "0",),
+    )
+    c.commit()
+
+
+def is_ai_enabled_for_user(user_id: int) -> bool:
+    """Returns False only if the user has been explicitly disabled."""
+    c = _conn()
+    row = c.execute(
+        "SELECT ai_enabled FROM user_ai_prefs WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    # No row = default on
+    return row is None or bool(row["ai_enabled"])
+
+
+def set_ai_enabled_for_user(user_id: int, enabled: bool) -> None:
+    c = _conn()
+    c.execute(
+        "INSERT OR REPLACE INTO user_ai_prefs (user_id, ai_enabled) VALUES (?, ?)",
+        (user_id, 1 if enabled else 0),
+    )
     c.commit()

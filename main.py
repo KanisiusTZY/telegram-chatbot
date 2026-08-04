@@ -102,6 +102,10 @@ Commands (ketik dari chat ini):
                   waktu bisa: +30m +2h +1d
                   atau ISO: 2026-08-05T09:00
   /clear        — hapus history percakapan
+  /aion         — aktifkan AI untuk user ini
+  /aioff        — matiin AI untuk user ini (bot diam)
+  /aion all     — aktifkan AI untuk semua orang
+  /aioff all    — matiin AI untuk semua orang
 
 Gambar juga bisa — gua analisis + bisa langsung hitung/cari dari isinya."""
 
@@ -416,6 +420,14 @@ async def handle_private_message(event):
     user_id  = sender.id
     username = f"@{sender.username}" if sender.username else sender.first_name
 
+    # ── AI on/off gate ────────────────────────────────────────────────────
+    if not agent_db.is_ai_enabled_global():
+        log.debug(f"[ai_gate] global off — ignoring {username}")
+        return
+    if not agent_db.is_ai_enabled_for_user(user_id):
+        log.debug(f"[ai_gate] user {user_id} disabled — ignoring")
+        return
+
     # ── Rate limit check ──────────────────────────────────────────────────
     if not _rate_limiter.is_allowed(user_id):
         log.warning(f"[rate_limit] user={user_id} ({username}) throttled")
@@ -560,6 +572,46 @@ async def cmd_help(event):
     peer = await event.get_chat()
     if isinstance(peer, User):
         await client.send_message(peer.id, HELP_TEXT)
+
+
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/aion(\s+all)?$"))
+async def cmd_aion(event):
+    if not event.is_private:
+        return
+    is_global = bool(event.pattern_match.group(1))
+    await event.delete()
+
+    if is_global:
+        agent_db.set_ai_enabled_global(True)
+        me = await client.get_me()
+        await client.send_message("me", "✅ AI diaktifkan untuk semua orang.")
+        log.info("[ai_gate] global AI enabled")
+    else:
+        peer = await event.get_chat()
+        if isinstance(peer, User):
+            agent_db.set_ai_enabled_for_user(peer.id, True)
+            await client.send_message(peer.id, "✅ AI diaktifkan untuk chat ini.")
+            log.info(f"[ai_gate] AI enabled for user {peer.id}")
+
+
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/aioff(\s+all)?$"))
+async def cmd_aioff(event):
+    if not event.is_private:
+        return
+    is_global = bool(event.pattern_match.group(1))
+    await event.delete()
+
+    if is_global:
+        agent_db.set_ai_enabled_global(False)
+        me = await client.get_me()
+        await client.send_message("me", "🔇 AI dimatiin untuk semua orang.")
+        log.info("[ai_gate] global AI disabled")
+    else:
+        peer = await event.get_chat()
+        if isinstance(peer, User):
+            agent_db.set_ai_enabled_for_user(peer.id, False)
+            await client.send_message(peer.id, "🔇 AI dimatiin untuk chat ini.")
+            log.info(f"[ai_gate] AI disabled for user {peer.id}")
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
