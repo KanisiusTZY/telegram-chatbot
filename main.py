@@ -137,6 +137,10 @@ class RateLimiter:
 
 _rate_limiter = RateLimiter(RATE_LIMIT_CALLS, RATE_LIMIT_WINDOW)
 
+# Deduplication: track recently processed message IDs (in-memory, last 500)
+_seen_msg_ids: deque = deque(maxlen=500)
+_seen_lock = threading.Lock()
+
 
 # ─── Reminder Time Parser ────────────────────────────────────────────────────
 
@@ -419,6 +423,14 @@ async def handle_private_message(event):
 
     user_id  = sender.id
     username = f"@{sender.username}" if sender.username else sender.first_name
+
+    # ── Deduplication ────────────────────────────────────────────────────
+    msg_id = event.message.id
+    with _seen_lock:
+        if msg_id in _seen_msg_ids:
+            log.debug(f"[dedup] skipping already-processed message {msg_id}")
+            return
+        _seen_msg_ids.append(msg_id)
 
     # ── AI on/off gate ────────────────────────────────────────────────────
     if not agent_db.is_ai_enabled_global():
