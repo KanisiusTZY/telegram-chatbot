@@ -542,6 +542,35 @@ else:
     log.info("Using SQLite session file")
 
 
+def check_and_trigger_direct_conversion(user_id: int, text_content: str) -> bool:
+    """If user text explicitly requests conversion (e.g. 'ubah jadi pdf', 'ke pdf', 'jadiin pdf'), execute file_convert directly."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+    conv_keywords = ["ubah", "jadiin", "konversi", "convert", "ke pdf", "ke docx", "ke png", "ke jpg", "ke txt", "jadikan"]
+    if not any(kw in txt for kw in conv_keywords):
+        return False
+
+    target_format = None
+    if "pdf" in txt:
+        target_format = "pdf"
+    elif "docx" in txt or "word" in txt:
+        target_format = "docx"
+    elif "png" in txt:
+        target_format = "png"
+    elif "jpg" in txt or "jpeg" in txt or "gambar" in txt or "foto" in txt:
+        target_format = "jpg"
+    elif "txt" in txt or "teks" in txt or "text" in txt:
+        target_format = "txt"
+
+    if target_format:
+        from agent_tools import execute_tool
+        log.info(f"[auto_convert] Direct conversion triggered for user={user_id} target_format={target_format}")
+        execute_tool(user_id, "file_convert", {"target_format": target_format})
+        return True
+    return False
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -617,10 +646,13 @@ async def handle_private_message(event):
                     except Exception as e:
                         log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
 
-                reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
+                # Check explicit conversion in caption first
+                triggered = check_and_trigger_direct_conversion(user_id, caption) if caption else False
 
-            await event.reply(reply)
-            log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+                if not triggered:
+                    reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
+                    await event.reply(reply)
+                    log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
 
             from agent_tools import pop_pending_converted_file
             pending = pop_pending_converted_file(user_id)
@@ -719,13 +751,15 @@ async def handle_private_message(event):
 
         log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
 
+        triggered = False
         async with client.action(event.chat_id, "typing"):
-            reply = await asyncio.to_thread(run_agent, user_id, text)
+            triggered = check_and_trigger_direct_conversion(user_id, text)
+            if not triggered:
+                reply = await asyncio.to_thread(run_agent, user_id, text)
+                await event.reply(reply)
+                log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
 
-        await event.reply(reply)
-        log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
-
-        # Check if a file conversion was triggered by text message (e.g. "ubah ke PDF")
+        # Check if a file conversion was triggered
         from agent_tools import pop_pending_converted_file
         pending = pop_pending_converted_file(user_id)
         if pending:
@@ -746,6 +780,8 @@ async def handle_private_message(event):
                     os.remove(src_path)
             except Exception as e:
                 log.warning(f"Failed to remove temp file: {e}")
+        elif triggered:
+            await event.reply("❌ Belum ada foto atau file yang kamu kirim bro. Silakan kirim foto atau dokumen (DOCX/PDF/JPG/PNG) dulu, baru minta konversi!")
 
     except Exception as e:
         log.error(f"Error processing message from user {user_id}: {e}", exc_info=True)
