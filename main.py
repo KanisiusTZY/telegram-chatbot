@@ -72,24 +72,18 @@ Jika user mengirim gambar:
 
 Jawablah setiap pertanyaan user dengan ramah, jelas, dan membantu."""
 
-HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa aku lakukan:
+HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
 
-💬 Ngobrol & Diskusi — kirim pesan apa saja, aku akan bantu jawab!
+💬 Ngobrol & Diskusi — kirim pesan biasa (misal "ingetin 5m minum air"), AI otomatis paham!
 
-⚙️ Tools Otomatis:
-  🔍 web_search    — cari info & berita terbaru di internet
-  🧮 calculate     — hitung kalkulasi matematika
-  📝 save_note     — simpan catatan penting
-  📚 get_notes     — lihat semua catatan kamu
-  ⏰ set_reminder  — buat pengingat otomatis
-
-📌 Commands (ketik langsung dari chat):
-  /help         — tampilkan menu bantuan ini
-  /notes        — lihat daftar catatan kamu
-  /remind <waktu> <pesan>
-                — pasang pengingat (contoh: /remind +30m Minum air)
-  /clear        — bersihkan riwayat obrolan
-  /aion /aioff  — aktifkan / matikan respon AI
+📌 Commands Singkat (Ketik langsung di chat):
+  /on   atau /aion    — aktifkan AI di chat ini
+  /off  atau /aioff   — matikan AI di chat ini
+  /onall atau /offall — aktifkan / matikan AI untuk semua chat
+  /r <waktu> <pesan>  — buat reminder singkat (contoh: /r +2m minum air)
+  /n    atau /notes   — lihat daftar catatan
+  /c    atau /clear   — bersihkan percakapan
+  /h    atau /help    — tampilkan bantuan ini
 
 🖼️ Gambar — kirim gambar untuk dianalisis atau dihitung isinya!"""
 
@@ -497,7 +491,7 @@ async def handle_private_message(event):
 
 # ─── Outgoing Commands ────────────────────────────────────────────────────────
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/clear$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(clear|c)$"))
 async def cmd_clear(event):
     if not event.is_private:
         return
@@ -509,7 +503,7 @@ async def cmd_clear(event):
         log.info(f"🗑️ History cleared for user {peer.id}")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/notes$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(notes|n)$"))
 async def cmd_notes(event):
     if not event.is_private:
         return
@@ -532,7 +526,7 @@ async def cmd_notes(event):
     log.info(f"📝 /notes shown for user {peer.id} ({len(notes)} notes)")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/remind\s+(.+)$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(remind|r)\s+(.+)$"))
 async def cmd_remind(event):
     if not event.is_private:
         return
@@ -541,7 +535,7 @@ async def cmd_remind(event):
         return
 
     # Parse: /remind <time> <message>
-    args = event.pattern_match.group(1).strip()
+    args = event.pattern_match.group(2).strip()
     parts = args.split(None, 1)  # split on first whitespace only
 
     await event.delete()
@@ -550,9 +544,9 @@ async def cmd_remind(event):
         usage = (
             "Format salah.\n"
             "Contoh:\n"
-            "  /remind +30m Minum obat\n"
-            "  /remind +2h Meeting\n"
-            "  /remind 2026-08-05T09:00 Deadline\n"
+            "  /r +30m Minum obat\n"
+            "  /r +2h Meeting\n"
+            "  /r 2026-08-05T09:00 Deadline\n"
         )
         await client.send_message(peer.id, usage)
         return
@@ -574,7 +568,7 @@ async def cmd_remind(event):
     log.info(f"⏰ /remind #{rid} saved for user {peer.id}: '{message}' at {ts}")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/help$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(help|h)$"))
 async def cmd_help(event):
     if not event.is_private:
         return
@@ -584,11 +578,12 @@ async def cmd_help(event):
         await client.send_message(peer.id, HELP_TEXT)
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/aion(\s+all)?$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(aion|on|onall)(\s+all)?$"))
 async def cmd_aion(event):
     if not event.is_private:
         return
-    is_global = bool(event.pattern_match.group(1))
+    cmd_name = event.pattern_match.group(1)
+    is_global = bool(event.pattern_match.group(2)) or (cmd_name == "onall")
     await event.delete()
 
     if is_global:
@@ -604,11 +599,12 @@ async def cmd_aion(event):
             log.info(f"[ai_gate] AI enabled for user {peer.id}")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/aioff(\s+all)?$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^/(aioff|off|offall)(\s+all)?$"))
 async def cmd_aioff(event):
     if not event.is_private:
         return
-    is_global = bool(event.pattern_match.group(1))
+    cmd_name = event.pattern_match.group(1)
+    is_global = bool(event.pattern_match.group(2)) or (cmd_name == "offall")
     await event.delete()
 
     if is_global:
