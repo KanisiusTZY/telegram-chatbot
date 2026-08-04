@@ -25,16 +25,16 @@ TOOLS = [
         "function": {
             "name": "web_search",
             "description": (
-                "Cari informasi terkini di internet pakai DuckDuckGo. "
-                "Gunakan kalau user nanya soal berita, fakta terbaru, atau hal yang "
-                "lo gak yakin jawabannya."
+                "Cari informasi real-time dan fakta di internet pakai DuckDuckGo. "
+                "WAJIB digunakan saat user menanyakan pertanyaan tentang istilah, singkatan, tim esport/olahraga (misal BTR, RRQ, EVOS), "
+                "tokoh, berita, fakta, harga, cuaca, atau topik umum apa pun agar jawaban selalu akurat dan terbaru."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Query pencarian dalam bahasa Indonesia atau Inggris.",
+                        "description": "Query pencarian dalam bahasa Indonesia atau Inggris (misal 'apa itu BTR esport', 'harga btc hari ini').",
                     },
                 },
                 "required": ["query"],

@@ -58,20 +58,21 @@ SYSTEM_PROMPT = """Kamu adalah AI Assistant pribadi yang ramah, cerdas, informat
 
 Gaya Komunikasi & Kepribadian:
 - Ramah, sopan, dan santai (menggunakan bahasa Indonesia yang natural dan casual/semi-formal seperti "aku/kamu" atau "saya/kamu").
-- Informatif dan to-the-point: memberikan jawaban yang jelas, akurat, dan mudah dipahami tanpa berbelit-belit.
+- Informatif dan to-the-point: memberikan jawaban yang jelas, akurat, dan mudah dipahami.
 - Selalu siap membantu dengan senang hati dan profesional.
 - Gunakan format yang rapi agar pesan enak dibaca di Telegram.
 
-Kapan menggunakan tools:
-- Gunakan web_search jika user menanyakan informasi terkini (berita, harga crypto/saham, cuaca, fakta terbaru).
-- Gunakan calculate jika ada perhitungan matematika.
-- Gunakan save_note / get_notes jika user meminta menyimpan atau melihat catatan.
-- Gunakan set_reminder SELALU jika user meminta dibuatkan pengingat / reminder dalam durasi atau waktu apapun (termasuk durasi singkat seperti beberapa detik atau menit). Langsung panggil tool set_reminder!
+Kapan WAJIB menggunakan tools:
+- WAJIB panggil `web_search` jika user menanyakan informasi fakta, istilah, singkatan, nama tim/organisasi/tokoh/game/esport (seperti BTR, RRQ, EVOS, dll), berita, harga crypto/saham/barang, cuaca, atau topik apa pun yang membutuhkan pencarian internet. JANGAN MENEBAK atau bilang tidak tahu tanpa melakukan `web_search` terlebih dahulu!
+- WAJIB panggil `calculate` jika ada perhitungan matematika.
+- WAJIB panggil `save_note` / `get_notes` jika user meminta menyimpan atau melihat catatan.
+- WAJIB panggil `file_convert` jika user meminta mengonversi file yang baru diunggah.
+- WAJIB panggil `set_reminder` jika user meminta dibuatkan pengingat / reminder dalam durasi atau waktu apapun (termasuk durasi singkat seperti beberapa detik atau menit).
 
 Jika user mengirim gambar:
 - Konteks gambar akan dikirimkan sebagai "Gambar yang dikirim user: ...". Gunakan informasi ini untuk menjawab atau menjalankan tool yang relevan.
 
-Jawablah setiap pertanyaan user dengan ramah, jelas, dan membantu."""
+Jawablah setiap pertanyaan user dengan ramah, jelas, akurat, dan membantu."""
 
 HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
 
@@ -248,6 +249,22 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
         # ── Final text answer ──────────────────────────────────────────────
         if choice.finish_reason != "tool_calls":
             reply = choice.message.content or "(gak ada jawaban)"
+
+            uncertainty_kw = [
+                "tidak tahu", "kurang tahu", "tidak memiliki informasi",
+                "tidak tahu pasti", "sebagai ai", "belum tahu", "tidak dapat menemukan",
+                "tidak tersedia", "tidak ada informasi"
+            ]
+            if iteration == 0 and any(kw in reply.lower() for kw in uncertainty_kw):
+                log.info(f"[agent] Model expressed uncertainty, auto-triggering web_search for query: '{user_message}'")
+                search_json = execute_tool(user_id, "web_search", {"query": user_message})
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({
+                    "role": "user",
+                    "content": f"[Hasil pencarian internet untuk '{user_message}']:\n{search_json}\n\nTolong jawab pertanyaan user berdasarkan data pencarian di atas dengan ramah, akurat, dan lengkap."
+                })
+                continue
+
             agent_db.save_message(user_id, "assistant", reply)
             return reply
 
