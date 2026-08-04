@@ -224,6 +224,30 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
     for iteration in range(AGENT_MAX_ITERATIONS):
         log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS}")
 
+        # Auto web_search context injection for factual/real-time questions on turn 0
+        if iteration == 0:
+            user_txt_lower = user_message.lower().strip()
+            factual_keywords = [
+                "siapa", "dimana", "orang mana", "presiden", "juara", "harga",
+                "kapan", "berita", "skor", "pemain", "pro player", "klub", "tim",
+                "tahun berapa", "umur", "asal", "lahir", "sekarang", "skrg"
+            ]
+            is_factual = any(kw in user_txt_lower for kw in factual_keywords)
+            negation_keywords = ["gak", "ga ", "g ", "nggak", "tidak", "gabisa", "gbs"]
+            is_negated = any(neg in user_txt_lower for neg in negation_keywords)
+
+            if is_factual and not is_negated:
+                log.info(f"[agent] Factual question detected ('{user_message}'), auto-fetching web_search context...")
+                try:
+                    search_json = execute_tool(user_id, "web_search", {"query": user_message})
+                    if "error" not in search_json.lower() and len(search_json) > 30:
+                        messages.append({
+                            "role": "user",
+                            "content": f"[Data internet real-time untuk '{user_message}']:\n{search_json}\n\nGunakan data internet real-time di atas untuk menjawab pertanyaan user dengan fakta akurat, santai, dan lengkap."
+                        })
+                except Exception as e:
+                    log.warning(f"[agent] Auto web_search fetch error: {e}")
+
         response = None
         current_model = GROQ_MODEL
 
