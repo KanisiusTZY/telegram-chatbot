@@ -50,8 +50,9 @@ RATE_LIMIT_WINDOW     = 60  # seconds
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
 groq_client      = Groq(api_key=GROQ_API_KEY)
-GROQ_MODEL       = "llama-3.3-70b-versatile"
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL          = "llama-3.3-70b-versatile"
+GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
+GROQ_VISION_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 SYSTEM_PROMPT = """Kamu adalah AI Assistant pribadi yang ramah, cerdas, informatif, dan solutif.
 
@@ -191,10 +192,12 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
         log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS}")
 
         response = None
+        current_model = GROQ_MODEL
+
         for attempt in range(max_retries):
             try:
                 response = groq_client.chat.completions.create(
-                    model=GROQ_MODEL,
+                    model=current_model,
                     messages=messages,
                     tools=TOOLS,
                     tool_choice="auto",
@@ -203,6 +206,11 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                 break
             except Exception as e:
                 err_str = str(e)
+                if "429" in err_str or "rate_limit" in err_str:
+                    if current_model != GROQ_FALLBACK_MODEL:
+                        log.warning(f"Groq model {current_model} rate limited (429), switching to fallback model {GROQ_FALLBACK_MODEL}...")
+                        current_model = GROQ_FALLBACK_MODEL
+                        continue
                 retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
                 if retriable and attempt < max_retries - 1:
                     wait = 2 ** attempt
@@ -216,7 +224,7 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                             if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant") and m.get("content")
                         ]
                         fallback_resp = groq_client.chat.completions.create(
-                            model=GROQ_MODEL,
+                            model=GROQ_FALLBACK_MODEL,
                             messages=clean_msgs,
                             max_tokens=1024,
                         )
@@ -590,7 +598,7 @@ async def cmd_remind(event):
 async def cmd_help(event):
     if not event.is_private:
         return
-    if event.outgoing:
+    if event.out:
         try:
             await event.delete()
         except Exception:
