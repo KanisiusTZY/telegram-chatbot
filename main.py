@@ -208,12 +208,16 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                     wait = 2 ** attempt
                     log.warning(f"Groq retry {attempt + 1}/{max_retries} in {wait}s: {e}")
                     time.sleep(wait)
-                elif "tool_use_failed" in err_str or "invalid_request_error" in err_str:
+                elif "tool_use_failed" in err_str or "invalid_request_error" in err_str or "400" in err_str:
                     log.warning(f"Groq tool call failed ({e}), falling back to direct text completion...")
                     try:
+                        clean_msgs = [
+                            m for m in messages
+                            if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant") and m.get("content")
+                        ]
                         fallback_resp = groq_client.chat.completions.create(
                             model=GROQ_MODEL,
-                            messages=messages,
+                            messages=clean_msgs,
                             max_tokens=1024,
                         )
                         reply = fallback_resp.choices[0].message.content or "(gak ada jawaban)"
@@ -239,7 +243,22 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
 
         # ── Tool call(s) ───────────────────────────────────────────────────
         assistant_msg = choice.message
-        messages.append(assistant_msg)
+        assistant_dict = {
+            "role": "assistant",
+            "content": assistant_msg.content or "",
+        }
+        if assistant_msg.tool_calls:
+            assistant_dict["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    }
+                } for tc in assistant_msg.tool_calls
+            ]
+        messages.append(assistant_dict)
 
         for tc in (assistant_msg.tool_calls or []):
             tool_name = tc.function.name
@@ -259,7 +278,6 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
             })
 
     fallback = "Hmm, gua nyoba terus tapi gak kelar-kelar. Coba tanya ulang dengan lebih spesifik."
-    agent_db.save_message(user_id, "assistant", fallback)
     return fallback
 
 
@@ -568,14 +586,16 @@ async def cmd_remind(event):
     log.info(f"⏰ /remind #{rid} saved for user {peer.id}: '{message}' at {ts}")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/(help|h)$"))
+@client.on(events.NewMessage(pattern=r"^/(help|h)$"))
 async def cmd_help(event):
     if not event.is_private:
         return
-    await event.delete()
-    peer = await event.get_chat()
-    if isinstance(peer, User):
-        await client.send_message(peer.id, HELP_TEXT)
+    if event.outgoing:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+    await event.reply(HELP_TEXT)
 
 
 @client.on(events.NewMessage(outgoing=True, pattern=r"^/(aion|on|onall)(\s+all)?$"))
