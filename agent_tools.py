@@ -208,12 +208,14 @@ def _tool_file_convert(user_id: int, target_format: str) -> str:
 
         # 3. PDF -> Image (JPG / PNG)
         elif src_ext == "pdf" and target_format in ["jpg", "jpeg", "png"]:
-            from pdf2image import convert_from_path
-            images = convert_from_path(src_path, first_page=1, last_page=1)
-            if not images:
-                return json.dumps({"error": "Gagal membaca halaman dari file PDF."})
-            fmt = "JPEG" if target_format in ["jpg", "jpeg"] else "PNG"
-            images[0].save(out_path, fmt)
+            import fitz
+            doc = fitz.open(src_path)
+            if len(doc) == 0:
+                return json.dumps({"error": "File PDF kosong."})
+            page = doc[0]
+            pix = page.get_pixmap(dpi=150)
+            pix.save(out_path)
+            doc.close()
 
         # 4. PDF -> DOCX
         elif src_ext == "pdf" and target_format == "docx":
