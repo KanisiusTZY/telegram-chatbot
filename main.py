@@ -305,6 +305,7 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
+                "name": tool_name,
                 "content": result,
             })
 
