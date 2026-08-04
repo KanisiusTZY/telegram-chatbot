@@ -12,4 +12,5 @@ dependencies = [
     "telethon>=1.43.2",
     "duckduckgo-search>=6.0.0",
     "simpleeval>=0.9.13",
+    "apscheduler>=3.10.0",
 ]
