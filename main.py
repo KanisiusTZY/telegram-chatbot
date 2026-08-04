@@ -203,16 +203,28 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
             clean_msg = user_message.strip()
             words = clean_msg.split()
             msg_lower = clean_msg.lower()
-            common_greetings = {"p", "ping", "hi", "halo", "hello", "tes", "test", "hei", "ok", "oke", "sip", "iya", "ga", "nggak", "tidak", "apa", "kenapa"}
 
-            if 1 <= len(words) <= 5 and msg_lower not in common_greetings:
+            conversational_kw = {
+                "p", "ping", "hi", "halo", "hello", "tes", "test", "hei", "ok", "oke", "sip",
+                "iya", "ga", "gak", "nggak", "tidak", "apa", "kenapa", "wkwk", "wkwkwk",
+                "lama bgt", "lama banget", "lemot", "lemot bgt", "lelet", "cepet bgt",
+                "parah", "parah bgt", "kocak", "kocak bgt", "jir", "anjir", "gokil", "gokil bgt",
+                "mantap", "mantul", "makasih", "makasi", "thanks", "thx", "yoi", "ngawur", "salah"
+            }
+
+            is_conversational = (
+                msg_lower in conversational_kw
+                or any(cw in msg_lower for cw in ["lama bgt", "lama banget", "lemot", "gokil", "kocak", "wkwk", "anjir", "makasih", "makasi", "parah"])
+            )
+
+            if 1 <= len(words) <= 5 and not is_conversational:
                 log.info(f"[agent] Short query detected ('{clean_msg}'), auto-fetching web_search context...")
                 try:
                     search_json = execute_tool(user_id, "web_search", {"query": clean_msg})
                     if "error" not in search_json.lower():
                         messages.append({
                             "role": "user",
-                            "content": f"[Data internet terbaru tentang '{clean_msg}']:\n{search_json}\n\nGunakan data internet di atas untuk menjawab pertanyaan user dengan gaul, akurat, dan lengkap."
+                            "content": f"[Data internet terbaru tentang '{clean_msg}']:\n{search_json}\n\nGunakan data internet di atas untuk menjawab pertanyaan user dengan santai, gaul, akurat, dan lengkap."
                         })
                 except Exception as e:
                     log.warning(f"[agent] Auto web_search context injection failed: {e}")

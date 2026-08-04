@@ -308,7 +308,7 @@ def _search_ddg_html(query: str, max_results: int = 5) -> list[dict]:
     ctx.verify_mode = ssl.CERT_NONE
 
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+        with urllib.request.urlopen(req, context=ctx, timeout=2.5) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
 
         results = []
