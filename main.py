@@ -517,81 +517,94 @@ async def handle_private_message(event):
 
 # ─── Outgoing Commands ────────────────────────────────────────────────────────
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/(clear|c)$"))
+@client.on(events.NewMessage(pattern=r"^/(clear|c)$"))
 async def cmd_clear(event):
     if not event.is_private:
         return
-    peer = await event.get_chat()
-    if isinstance(peer, User):
-        agent_db.clear_history(peer.id)
-        await event.delete()
-        await client.send_message(peer.id, "🗑️ History percakapan direset!")
-        log.info(f"🗑️ History cleared for user {peer.id}")
+    sender = await event.get_sender()
+    if isinstance(sender, User):
+        agent_db.clear_history(sender.id)
+        if event.out:
+            try:
+                await event.delete()
+            except Exception:
+                pass
+        await event.reply("🗑️ History percakapan direset!")
+        log.info(f"🗑️ History cleared for user {sender.id}")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/(notes|n)$"))
+@client.on(events.NewMessage(pattern=r"^/(notes|n)$"))
 async def cmd_notes(event):
     if not event.is_private:
         return
-    peer = await event.get_chat()
-    if not isinstance(peer, User):
+    sender = await event.get_sender()
+    if not isinstance(sender, User):
         return
 
-    notes = agent_db.get_notes(peer.id)
-    await event.delete()
+    notes = agent_db.get_notes(sender.id)
+    if event.out:
+        try:
+            await event.delete()
+        except Exception:
+            pass
 
     if not notes:
-        await client.send_message(peer.id, "📝 Belum ada catatan tersimpan.")
+        await event.reply("📝 Belum ada catatan tersimpan.")
         return
 
     lines = ["📝 Catatan lo:"]
     for n in notes:
         ts = n["created_at"][:16]  # trim seconds
         lines.append(f"  [{n['id']}] {n['content']}  ({ts})")
-    await client.send_message(peer.id, "\n".join(lines))
-    log.info(f"📝 /notes shown for user {peer.id} ({len(notes)} notes)")
+    await event.reply("\n".join(lines))
+    log.info(f"📝 /notes shown for user {sender.id} ({len(notes)} notes)")
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^/(remind|r)\s+(.+)$"))
+@client.on(events.NewMessage(pattern=r"^/(remind|r)\s+(.+)$"))
 async def cmd_remind(event):
     if not event.is_private:
         return
-    peer = await event.get_chat()
-    if not isinstance(peer, User):
+    sender = await event.get_sender()
+    if not isinstance(sender, User):
         return
 
-    # Parse: /remind <time> <message>
     args = event.pattern_match.group(2).strip()
-    parts = args.split(None, 1)  # split on first whitespace only
+    from agent_tools import parse_flexible_time
 
-    await event.delete()
+    # Try flexible pattern parsing
+    remind_at = None
+    message = args
 
-    if len(parts) < 2:
-        usage = (
-            "Format salah.\n"
-            "Contoh:\n"
-            "  /r +30m Minum obat\n"
-            "  /r +2h Meeting\n"
-            "  /r 2026-08-05T09:00 Deadline\n"
-        )
-        await client.send_message(peer.id, usage)
-        return
+    m = re.search(r'^\+?(\d+)\s*(detik|sec|second|s|menit|min|minute|m|jam|hour|h|hari|day|d)\s*(lg|lagi)?\s*(.*)$', args, re.IGNORECASE)
+    if m:
+        remind_at = parse_flexible_time(f"{m.group(1)} {m.group(2)}")
+        message = m.group(4).strip() or args
+    else:
+        parts = args.split(None, 1)
+        if len(parts) >= 2:
+            remind_at = parse_flexible_time(parts[0])
+            message = parts[1].strip()
 
-    time_str, message = parts[0], parts[1].strip()
-    remind_at = parse_remind_time(time_str)
+    if event.out:
+        try:
+            await event.delete()
+        except Exception:
+            pass
 
     if remind_at is None:
-        await client.send_message(
-            peer.id,
-            f"Gak ngerti format waktu '{time_str}'.\n"
-            "Pakai +30m, +2h, +1d, atau 2026-08-05T09:00"
+        await event.reply(
+            f"Format waktu untuk '{args}' tidak dikenali.\n"
+            "Contoh:\n"
+            "  /r 2m mandi\n"
+            "  /r 10s berak\n"
+            "  /r +30m minum obat"
         )
         return
 
-    rid = agent_db.save_reminder(peer.id, message, remind_at)
+    rid = agent_db.save_reminder(sender.id, message, remind_at)
     ts  = remind_at.strftime("%Y-%m-%d %H:%M UTC")
-    await client.send_message(peer.id, f"⏰ Reminder #{rid} disimpan — '{message}' @ {ts}")
-    log.info(f"⏰ /remind #{rid} saved for user {peer.id}: '{message}' at {ts}")
+    await event.reply(f"⏰ Reminder #{rid} disimpan — '{message}' @ {ts}")
+    log.info(f"⏰ /remind #{rid} saved for user {sender.id}: '{message}' at {ts}")
 
 
 @client.on(events.NewMessage(pattern=r"^/(help|h)$"))
