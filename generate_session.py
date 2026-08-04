@@ -3,8 +3,8 @@ import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-API_ID = int(os.environ["TELEGRAM_API_ID"])
-API_HASH = os.environ["TELEGRAM_API_HASH"]
+API_ID = int(os.environ.get("TELEGRAM_API_ID") or input("Masukkan TELEGRAM_API_ID: "))
+API_HASH = os.environ.get("TELEGRAM_API_HASH") or input("Masukkan TELEGRAM_API_HASH: ")
 
 async def main():
     print("=== Generate SESSION_STRING ===")
