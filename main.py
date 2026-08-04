@@ -52,7 +52,7 @@ RATE_LIMIT_WINDOW     = 60  # seconds
 groq_client      = Groq(api_key=GROQ_API_KEY)
 GROQ_MODEL          = "llama-3.3-70b-versatile"
 GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
-GROQ_VISION_MODEL   = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_VISION_MODEL   = "llama-3.2-11b-vision-preview"
 
 SYSTEM_PROMPT = """Kamu adalah AI Assistant pribadi yang ramah, cerdas, informatif, dan solutif.
 
@@ -76,10 +76,9 @@ Jawablah setiap pertanyaan user dengan ramah, jelas, akurat, dan membantu."""
 
 HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
 
-💬 Ngobrol & Diskusi — kirim pesan biasa (misal "ingetin 5m minum air"), AI otomatis paham!
+💬 Ngobrol & Diskusi — kirim pesan biasa (misal "apa itu btr", "ingetin 5m minum air"), AI otomatis paham & cari di internet jika perlu!
 
 📌 Commands Singkat (Ketik langsung di chat):
-  /s <topik>  atau /search — cari info/berita langsung (contoh: /s harga btc)
   /k <hitung> atau /calc   — hitung kalkulator (contoh: /k 250 * 15)
   /r <waktu> <pesan>       — buat reminder singkat (contoh: /r 2m minum air)
   /n    atau /notes        — lihat daftar catatan
@@ -89,7 +88,7 @@ HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
   /onall atau /offall      — aktifkan / matikan AI untuk semua chat
   /h    atau /help         — tampilkan bantuan ini
 
-🖼️ Gambar — kirim gambar untuk dianalisis atau dihitung isinya!"""
+🖼️ Gambar — kirim gambar/foto untuk dianalisis, dibaca teksnya, atau dihitung isinya!"""
 
 
 # ─── Rate Limiter ────────────────────────────────────────────────────────────
@@ -318,33 +317,34 @@ def _vision_describe(image_bytes: bytes, caption: str) -> str | None:
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     prompt = (
         f"Deskripsikan isi gambar ini secara detail dan akurat, "
-        f"termasuk semua teks/angka yang terlihat."
+        f"termasuk semua teks, angka, atau objek yang terlihat."
         + (f"\n\nPertanyaan/instruksi user terkait gambar ini: {caption}" if caption else "")
     )
     user_content = [
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
         {"type": "text", "text": prompt},
     ]
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            resp = groq_client.chat.completions.create(
-                model=GROQ_VISION_MODEL,
-                messages=[
-                    {"role": "system", "content": "Kamu adalah AI vision yang mendeskripsikan gambar secara akurat dan lengkap."},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=1024,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            err_str = str(e)
-            retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
-            if retriable and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-            else:
-                log.error(f"Groq vision error: {e}")
-                return None
+
+    vision_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
+
+    for model_name in vision_models:
+        for attempt in range(2):
+            try:
+                resp = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "Kamu adalah AI vision yang mendeskripsikan gambar secara akurat dan lengkap dalam bahasa Indonesia."},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=1024,
+                )
+                content = resp.choices[0].message.content
+                if content:
+                    return content
+            except Exception as e:
+                log.warning(f"Groq vision model {model_name} attempt {attempt + 1} error: {e}")
+                time.sleep(1)
+
     return None
 
 
@@ -730,45 +730,6 @@ async def cmd_remind(event):
     ts  = remind_at.strftime("%Y-%m-%d %H:%M UTC")
     await event.reply(f"⏰ Reminder #{rid} disimpan — '{message}' @ {ts}")
     log.info(f"⏰ /remind #{rid} saved for user {sender.id}: '{message}' at {ts}")
-
-
-@client.on(events.NewMessage(pattern=r"^/(search|s)\s+(.+)$"))
-async def cmd_search(event):
-    if not event.is_private:
-        return
-    sender = await event.get_sender()
-    if not isinstance(sender, User):
-        return
-    query = event.pattern_match.group(2).strip()
-
-    if event.out:
-        try:
-            await event.delete()
-        except Exception:
-            pass
-
-    async with client.action(event.chat_id, "typing"):
-        from agent_tools import _tool_web_search
-        search_res = _tool_web_search(sender.id, query, max_results=5)
-
-        messages = [
-            {"role": "system", "content": "Kamu adalah AI Assistant yang merangkum hasil pencarian internet secara ramah, informatif, jelas, dan rapi dalam bahasa Indonesia."},
-            {"role": "user", "content": f"Tolong rangkum hasil pencarian internet berikut secara jelas dan lengkap untuk pertanyaan/topik '{query}':\n\n{search_res}"}
-        ]
-
-        try:
-            resp = groq_client.chat.completions.create(
-                model=GROQ_FALLBACK_MODEL,
-                messages=messages,
-                max_tokens=1024,
-            )
-            reply = resp.choices[0].message.content or f"🔍 Hasil pencarian untuk '{query}':\n{search_res}"
-        except Exception as e:
-            log.error(f"Search summary error: {e}")
-            reply = f"🔍 Hasil pencarian internet untuk '{query}':\n{search_res}"
-
-    await event.reply(reply)
-    log.info(f"🔍 /search '{query}' handled for user {sender.id}")
 
 
 @client.on(events.NewMessage(pattern=r"^/(calc|k)\s+(.+)$"))
