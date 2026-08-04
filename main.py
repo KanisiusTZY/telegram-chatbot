@@ -649,7 +649,9 @@ async def handle_private_message(event):
                 # Check explicit conversion in caption first
                 triggered = check_and_trigger_direct_conversion(user_id, caption) if caption else False
 
-                if not triggered:
+                if triggered:
+                    await event.reply("⚡ Sip, foto kamu sedang diubah jadi PDF...")
+                else:
                     reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
                     await event.reply(reply)
                     log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
