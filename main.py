@@ -582,6 +582,18 @@ async def handle_private_message(event):
                     return
                 log.info(f"🖼️ Downloaded {len(image_bytes)} bytes")
 
+                # Save photo to temp_files so file_convert can process it
+                temp_dir = "temp_files"
+                os.makedirs(temp_dir, exist_ok=True)
+                img_save_path = os.path.join(temp_dir, f"{user_id}_{int(time.time())}_photo.jpg")
+                try:
+                    with open(img_save_path, "wb") as img_f:
+                        img_f.write(image_bytes)
+                    from agent_tools import set_user_last_file
+                    set_user_last_file(user_id, img_save_path, "photo.jpg", ".jpg")
+                except Exception as img_err:
+                    log.warning(f"Failed to save image to temp_files: {img_err}")
+
                 if is_view_once:
                     try:
                         buf = io.BytesIO(image_bytes)
