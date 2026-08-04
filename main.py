@@ -78,13 +78,15 @@ HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
 💬 Ngobrol & Diskusi — kirim pesan biasa (misal "ingetin 5m minum air"), AI otomatis paham!
 
 📌 Commands Singkat (Ketik langsung di chat):
-  /on   atau /aion    — aktifkan AI di chat ini
-  /off  atau /aioff   — matikan AI di chat ini
-  /onall atau /offall — aktifkan / matikan AI untuk semua chat
-  /r <waktu> <pesan>  — buat reminder singkat (contoh: /r +2m minum air)
-  /n    atau /notes   — lihat daftar catatan
-  /c    atau /clear   — bersihkan percakapan
-  /h    atau /help    — tampilkan bantuan ini
+  /s <topik>  atau /search — cari info/berita langsung (contoh: /s harga btc)
+  /k <hitung> atau /calc   — hitung kalkulator (contoh: /k 250 * 15)
+  /r <waktu> <pesan>       — buat reminder singkat (contoh: /r 2m minum air)
+  /n    atau /notes        — lihat daftar catatan
+  /c    atau /clear        — bersihkan percakapan
+  /on   atau /aion         — aktifkan AI di chat ini
+  /off  atau /aioff        — matikan AI di chat ini
+  /onall atau /offall      — aktifkan / matikan AI untuk semua chat
+  /h    atau /help         — tampilkan bantuan ini
 
 🖼️ Gambar — kirim gambar untuk dianalisis atau dihitung isinya!"""
 
@@ -605,6 +607,61 @@ async def cmd_remind(event):
     ts  = remind_at.strftime("%Y-%m-%d %H:%M UTC")
     await event.reply(f"⏰ Reminder #{rid} disimpan — '{message}' @ {ts}")
     log.info(f"⏰ /remind #{rid} saved for user {sender.id}: '{message}' at {ts}")
+
+
+@client.on(events.NewMessage(pattern=r"^/(search|s)\s+(.+)$"))
+async def cmd_search(event):
+    if not event.is_private:
+        return
+    sender = await event.get_sender()
+    if not isinstance(sender, User):
+        return
+    query = event.pattern_match.group(2).strip()
+
+    if event.out:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+
+    async with client.action(event.chat_id, "typing"):
+        from agent_tools import _tool_web_search
+        search_res = _tool_web_search(sender.id, query, max_results=5)
+        prompt = f"Tolong jelaskan/rangkum hasil pencarian internet ini untuk pertanyaan '{query}':\n{search_res}"
+        reply = await asyncio.to_thread(run_agent, sender.id, prompt, _no_history_save=True)
+
+    await event.reply(reply)
+    log.info(f"🔍 /search '{query}' handled for user {sender.id}")
+
+
+@client.on(events.NewMessage(pattern=r"^/(calc|k)\s+(.+)$"))
+async def cmd_calc(event):
+    if not event.is_private:
+        return
+    sender = await event.get_sender()
+    if not isinstance(sender, User):
+        return
+    expr = event.pattern_match.group(2).strip()
+
+    if event.out:
+        try:
+            await event.delete()
+        except Exception:
+            pass
+
+    from agent_tools import _tool_calculate
+    result = _tool_calculate(sender.id, expr)
+    try:
+        data = json.loads(result)
+        if "result" in data:
+            reply = f"🧮 Hasil: **{data['result']}**\n`{expr}`"
+        else:
+            reply = f"❌ Error: {data.get('error', 'Gagal menghitung')}"
+    except Exception:
+        reply = result
+
+    await event.reply(reply)
+    log.info(f"🧮 /calc '{expr}' handled for user {sender.id}")
 
 
 @client.on(events.NewMessage(pattern=r"^/(help|h)$"))
