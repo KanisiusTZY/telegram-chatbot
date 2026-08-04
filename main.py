@@ -355,21 +355,34 @@ def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> s
       2. Text agent loop processes the description, can use all tools
          (e.g. calculate totals from a receipt, search based on image content).
     """
+    # Normalize image bytes to standard JPEG if possible
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        image_bytes = buf.getvalue()
+    except Exception as e:
+        log.warning(f"Failed to normalize image bytes: {e}")
+
     vision_text = _vision_describe(image_bytes, caption)
 
-    if vision_text is None:
-        return "Gambarnya gak bisa gua baca, coba lagi"
+    if not vision_text:
+        vision_text = "Gambar telah diterima (deskripsi visual otomatis tidak tersedia)."
 
-    # Build a combined user message that feeds into the agent loop
     if caption:
         combined = (
             f"[Gambar yang dikirim user. Deskripsi otomatis dari gambar:\n{vision_text}]\n\n"
             f"Pertanyaan/instruksi user: {caption}"
         )
     else:
-        combined = f"[User kirim gambar. Deskripsi otomatis:\n{vision_text}]"
+        combined = (
+            f"[User mengirimkan sebuah gambar/foto. Deskripsi:\n{vision_text}]\n\n"
+            "Tolong berikan balasan yang ramah dan tanyakan apa yang bisa dibantu dari gambar ini."
+        )
 
-    # Save original label to DB, then run agent with full context
     agent_db.save_message(user_id, "user", combined)
     return run_agent(user_id, combined, _no_history_save=True)
 
@@ -499,89 +512,126 @@ async def handle_private_message(event):
         await event.reply("Pelan-pelan, gua bukan mesin ketik. Tunggu bentar dulu.")
         return
 
-    # ── Image handling ────────────────────────────────────────────────────
-    is_image = False
-    if event.message.media:
-        if isinstance(event.message.media, MessageMediaPhoto):
-            is_image = True
-        elif isinstance(event.message.media, MessageMediaDocument):
-            mime = getattr(event.message.file, "mime_type", "") or ""
-            if mime.startswith("image/"):
+    try:
+        # ── Image handling ────────────────────────────────────────────────────
+        is_image = False
+        if event.message.media:
+            if isinstance(event.message.media, MessageMediaPhoto):
                 is_image = True
+            elif isinstance(event.message.media, MessageMediaDocument):
+                mime = getattr(event.message.file, "mime_type", "") or ""
+                if mime.startswith("image/"):
+                    is_image = True
 
-    if is_image:
-        caption     = event.raw_text.strip()
-        is_view_once = bool(getattr(event.message.media, "ttl_seconds", None))
+        if is_image:
+            caption     = event.raw_text.strip()
+            is_view_once = bool(getattr(event.message.media, "ttl_seconds", None))
 
-        log.info(f"🖼️ [{username}|{user_id}] gambar, caption='{caption}'")
-        async with client.action(event.chat_id, "typing"):
-            image_bytes = await event.message.download_media(file=bytes)
-            if not image_bytes:
-                await event.reply("Gambarnya gagal ke-download, coba kirim ulang")
+            log.info(f"🖼️ [{username}|{user_id}] gambar, caption='{caption}'")
+            async with client.action(event.chat_id, "typing"):
+                image_bytes = await event.message.download_media(file=bytes)
+                if not image_bytes:
+                    await event.reply("Gambarnya gagal ke-download, coba kirim ulang")
+                    return
+                log.info(f"🖼️ Downloaded {len(image_bytes)} bytes")
+
+                if is_view_once:
+                    try:
+                        buf = io.BytesIO(image_bytes)
+                        buf.name = "photo.jpg"
+                        await client.send_file("me", buf, caption=f"📸 Foto sekali liat dari {username}")
+                        log.info(f"📥 [{username}|{user_id}] view-once saved")
+                    except Exception as e:
+                        log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
+
+                reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
+
+            await event.reply(reply)
+            log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+            return
+
+        # ── Document / File handling ──────────────────────────────────────────
+        is_doc = False
+        if event.message.media and isinstance(event.message.media, MessageMediaDocument):
+            mime = getattr(event.message.file, "mime_type", "") or ""
+            if not mime.startswith("image/"):
+                is_doc = True
+
+        if is_doc:
+            doc_size = getattr(event.message.file, "size", 0) or 0
+            if doc_size > 20 * 1024 * 1024:
+                await event.reply("❌ Ukuran file terlalu besar (maksimal 20 MB). Silakan kirim file yang lebih kecil.")
                 return
-            log.info(f"🖼️ Downloaded {len(image_bytes)} bytes")
 
-            if is_view_once:
+            orig_name = getattr(event.message.file, "name", None) or f"file_{user_id}.bin"
+            ext = os.path.splitext(orig_name)[1].lower()
+            ALLOWED_EXTS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".txt"}
+
+            if ext not in ALLOWED_EXTS:
+                await event.reply(
+                    f"❌ Format file '{ext}' belum didukung.\n"
+                    "Format yang didukung saat ini: **PDF**, **DOCX**, **JPG**, **PNG**, **TXT**."
+                )
+                return
+
+            temp_dir = "temp_files"
+            os.makedirs(temp_dir, exist_ok=True)
+            save_path = os.path.join(temp_dir, f"{user_id}_{int(time.time())}_{orig_name}")
+
+            async with client.action(event.chat_id, "document"):
+                await event.message.download_media(file=save_path)
+                from agent_tools import set_user_last_file
+                set_user_last_file(user_id, save_path, orig_name, ext)
+
+                size_mb = doc_size / (1024 * 1024)
+                caption = event.raw_text.strip()
+                prompt = f"User baru saja mengunggah file dokumen '{orig_name}' ({size_mb:.1f} MB)."
+                if caption:
+                    prompt += f" Pesan/instruksi user tentang file ini: {caption}"
+
+                reply = await asyncio.to_thread(run_agent, user_id, prompt, _no_history_save=False)
+
+            await event.reply(
+                f"📄 File **{orig_name}** ({size_mb:.1f} MB) berhasil diterima!\n\n"
+                + reply + "\n\n(Opsi konversi: **PDF**, **DOCX**, **PNG**, **JPG**, **TXT**)"
+            )
+
+            from agent_tools import pop_pending_converted_file
+            pending = pop_pending_converted_file(user_id)
+            if pending:
+                out_path = pending["out_path"]
+                out_filename = pending["out_filename"]
+                src_path = pending.get("src_path")
+
+                log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+                await client.send_file(
+                    event.chat_id,
+                    out_path,
+                    caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
+                )
                 try:
-                    buf = io.BytesIO(image_bytes)
-                    buf.name = "photo.jpg"
-                    await client.send_file("me", buf, caption=f"📸 Foto sekali liat dari {username}")
-                    log.info(f"📥 [{username}|{user_id}] view-once saved")
+                    if os.path.exists(out_path):
+                        os.remove(out_path)
+                    if src_path and os.path.exists(src_path):
+                        os.remove(src_path)
                 except Exception as e:
-                    log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
+                    log.warning(f"Failed to remove temp file: {e}")
+            return
 
-            reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
+        # ── Text handling ─────────────────────────────────────────────────────
+        text = event.raw_text.strip()
+        if not text or text.startswith("/"):
+            return
+
+        log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
+
+        async with client.action(event.chat_id, "typing"):
+            reply = await asyncio.to_thread(run_agent, user_id, text)
 
         await event.reply(reply)
         log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
-        return
 
-    # ── Document / File handling ──────────────────────────────────────────
-    is_doc = False
-    if event.message.media and isinstance(event.message.media, MessageMediaDocument):
-        mime = getattr(event.message.file, "mime_type", "") or ""
-        if not mime.startswith("image/"):
-            is_doc = True
-
-    if is_doc:
-        doc_size = getattr(event.message.file, "size", 0) or 0
-        if doc_size > 20 * 1024 * 1024:
-            await event.reply("❌ Ukuran file terlalu besar (maksimal 20 MB). Silakan kirim file yang lebih kecil.")
-            return
-
-        orig_name = getattr(event.message.file, "name", None) or f"file_{user_id}.bin"
-        ext = os.path.splitext(orig_name)[1].lower()
-        ALLOWED_EXTS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".txt"}
-
-        if ext not in ALLOWED_EXTS:
-            await event.reply(
-                f"❌ Format file '{ext}' belum didukung.\n"
-                "Format yang didukung saat ini: **PDF**, **DOCX**, **JPG**, **PNG**, **TXT**."
-            )
-            return
-
-        temp_dir = "temp_files"
-        os.makedirs(temp_dir, exist_ok=True)
-        save_path = os.path.join(temp_dir, f"{user_id}_{int(time.time())}_{orig_name}")
-
-        async with client.action(event.chat_id, "document"):
-            await event.message.download_media(file=save_path)
-            from agent_tools import set_user_last_file
-            set_user_last_file(user_id, save_path, orig_name, ext)
-
-            size_mb = doc_size / (1024 * 1024)
-            caption = event.raw_text.strip()
-            prompt = f"User baru saja mengunggah file dokumen '{orig_name}' ({size_mb:.1f} MB)."
-            if caption:
-                prompt += f" Pesan/instruksi user tentang file ini: {caption}"
-
-            reply = await asyncio.to_thread(run_agent, user_id, prompt, _no_history_save=False)
-
-        await event.reply(
-            f"📄 File **{orig_name}** ({size_mb:.1f} MB) berhasil diterima!\n\n"
-            + reply + "\n\n(Opsi konversi: **PDF**, **DOCX**, **PNG**, **JPG**, **TXT**)"
-        )
-
+        # Check if a file conversion was triggered by text message (e.g. "ubah ke PDF")
         from agent_tools import pop_pending_converted_file
         pending = pop_pending_converted_file(user_id)
         if pending:
@@ -602,42 +652,13 @@ async def handle_private_message(event):
                     os.remove(src_path)
             except Exception as e:
                 log.warning(f"Failed to remove temp file: {e}")
-        return
 
-    # ── Text handling ─────────────────────────────────────────────────────
-    text = event.raw_text.strip()
-    if not text or text.startswith("/"):
-        return
-
-    log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
-
-    async with client.action(event.chat_id, "typing"):
-        reply = await asyncio.to_thread(run_agent, user_id, text)
-
-    await event.reply(reply)
-    log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
-
-    # Check if a file conversion was triggered by text message (e.g. "ubah ke PDF")
-    from agent_tools import pop_pending_converted_file
-    pending = pop_pending_converted_file(user_id)
-    if pending:
-        out_path = pending["out_path"]
-        out_filename = pending["out_filename"]
-        src_path = pending.get("src_path")
-
-        log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
-        await client.send_file(
-            event.chat_id,
-            out_path,
-            caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
-        )
+    except Exception as e:
+        log.error(f"Error processing message from user {user_id}: {e}", exc_info=True)
         try:
-            if os.path.exists(out_path):
-                os.remove(out_path)
-            if src_path and os.path.exists(src_path):
-                os.remove(src_path)
-        except Exception as e:
-            log.warning(f"Failed to remove temp file: {e}")
+            await event.reply("Ada kendala teknis saat memproses pesanmu, coba kirim lagi ya!")
+        except Exception:
+            pass
 
 
 # ─── Outgoing Commands ────────────────────────────────────────────────────────
