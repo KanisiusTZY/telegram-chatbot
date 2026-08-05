@@ -959,6 +959,27 @@ async def handle_private_message(event):
         if not text:
             return
 
+        # Check if text message is a reply to a photo in Telegram
+        if event.is_reply:
+            try:
+                reply_msg = await event.get_reply_message()
+                if reply_msg and reply_msg.media:
+                    is_reply_img = isinstance(reply_msg.media, MessageMediaPhoto)
+                    if not is_reply_img and isinstance(reply_msg.media, MessageMediaDocument):
+                        mime = getattr(reply_msg.file, "mime_type", "") or ""
+                        if mime.startswith("image/"):
+                            is_reply_img = True
+
+                    if is_reply_img:
+                        temp_dir = "temp_files"
+                        os.makedirs(temp_dir, exist_ok=True)
+                        save_path = os.path.join(temp_dir, f"{user_id}_{int(time.time())}_replied_photo.jpg")
+                        await reply_msg.download_media(file=save_path)
+                        from agent_tools import set_user_last_file
+                        set_user_last_file(user_id, save_path, "replied_photo.jpg", ".jpg")
+            except Exception as reply_err:
+                log.warning(f"Failed to fetch replied-to photo: {reply_err}")
+
         # Explicit slash commands for music: /play, /lagu, /music, /mp3
         cmd_lower = text.lower()
         if any(cmd_lower.startswith(p) for p in ["/play", "/lagu", "/music", "/mp3", "!play", "!lagu", ".play", ".lagu"]):
