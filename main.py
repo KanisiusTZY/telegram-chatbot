@@ -753,9 +753,11 @@ async def handle_private_message(event):
                 src_path = pending.get("src_path")
 
                 log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+                force_doc = out_filename.lower().endswith((".png", ".pdf", ".docx", ".doc"))
                 await client.send_file(
                     event.chat_id,
                     out_path,
+                    force_document=force_doc,
                     caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
                 )
                 try:
@@ -819,9 +821,11 @@ async def handle_private_message(event):
                 src_path = pending.get("src_path")
 
                 log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+                force_doc = out_filename.lower().endswith((".png", ".pdf", ".docx", ".doc"))
                 await client.send_file(
                     event.chat_id,
                     out_path,
+                    force_document=force_doc,
                     caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
                 )
                 try:
@@ -866,9 +870,11 @@ async def handle_private_message(event):
             src_path = pending.get("src_path")
 
             log.info(f"📤 [{username}|{user_id}] Sending converted file: {out_filename}")
+            force_doc = out_filename.lower().endswith((".png", ".pdf", ".docx", ".doc"))
             await client.send_file(
                 event.chat_id,
                 out_path,
+                force_document=force_doc,
                 caption=f"✨ Ini file **{out_filename}** hasil konversi kamu!"
             )
             try:
