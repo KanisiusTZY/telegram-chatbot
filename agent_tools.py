@@ -945,10 +945,22 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
         w, h = input_img.size
 
         scale_factor = scale if scale in [2, 3, 4] else 4
-        new_w = min(w * scale_factor, 4000)
-        new_h = min(h * scale_factor, 4000)
+        target_w = w * scale_factor
+        target_h = h * scale_factor
 
-        # 1. High Quality 4x Lanczos Resampling
+        max_dim = 4000
+        if target_w > max_dim or target_h > max_dim:
+            if target_w >= target_h:
+                new_w = max_dim
+                new_h = int(h * (max_dim / w))
+            else:
+                new_h = max_dim
+                new_w = int(w * (max_dim / h))
+        else:
+            new_w = target_w
+            new_h = target_h
+
+        # 1. High Quality Lanczos Resampling (Preserves exact Aspect Ratio)
         hd_img = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         # 2. Unsharp Mask Sharpening
