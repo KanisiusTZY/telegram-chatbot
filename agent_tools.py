@@ -202,6 +202,26 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_screenshot",
+            "description": (
+                "Ambil screenshot tampilan website dan bungkus dalam frame HP iPhone 15 Pro POV (Dynamic Island). "
+                "Gunakan saat user minta '/iphone [url]', '/shot [url]', 'screenshot web [url]', atau 'tampilan iphone [url]'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL website yang ingin di-screenshot (misal 'https://github.com' atau 'google.com').",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -752,6 +772,117 @@ def _tool_music_search(user_id: int, query: str) -> str:
         return json.dumps({"error": f"Gagal mencari/mengunduh lagu: {str(e)}"})
 
 
+def _create_iphone_mockup(screen_img) -> "Image.Image":
+    """Wrap a mobile screenshot inside a sleek iPhone 15 Pro device mockup frame."""
+    from PIL import Image, ImageDraw
+
+    target_w, target_h = 390, 844
+    screen_resized = screen_img.resize((target_w, target_h), Image.Resampling.LANCZOS).convert("RGB")
+
+    padding = 24
+    frame_width = target_w + (padding * 2)
+    frame_height = target_h + (padding * 2)
+
+    img = Image.new("RGBA", (frame_width, frame_height), (0, 0, 0, 0))
+    canvas_draw = ImageDraw.Draw(img)
+
+    body_radius = 48
+    canvas_draw.rounded_rectangle(
+        [0, 0, frame_width, frame_height],
+        radius=body_radius,
+        fill="#1C1C1E",
+        outline="#3A3A3C",
+        width=3
+    )
+
+    screen_radius = 36
+    mask = Image.new("L", (target_w, target_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([0, 0, target_w, target_h], radius=screen_radius, fill=255)
+
+    img.paste(screen_resized, (padding, padding), mask)
+
+    island_w, island_h = 110, 28
+    island_x = (frame_width - island_w) // 2
+    island_y = padding + 10
+    overlay_draw = ImageDraw.Draw(img)
+    overlay_draw.rounded_rectangle(
+        [island_x, island_y, island_x + island_w, island_y + island_h],
+        radius=14,
+        fill="#000000"
+    )
+
+    bar_w, bar_h = 134, 5
+    bar_x = (frame_width - bar_w) // 2
+    bar_y = frame_height - padding - 12
+    overlay_draw.rounded_rectangle(
+        [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+        radius=3,
+        fill="#FFFFFF"
+    )
+
+    return img
+
+
+def _tool_web_screenshot(user_id: int, url: str) -> str:
+    """Fetch mobile screenshot of a URL and package it inside an iPhone POV frame."""
+    import urllib.request, time, os
+    from PIL import Image
+    import io
+
+    log.info(f"[tool:web_screenshot] user={user_id} url={url!r}")
+
+    clean_url = url.strip()
+    if not clean_url.startswith(("http://", "https://")):
+        clean_url = "https://" + clean_url
+
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    screen_img = None
+    microlink_url = f"https://api.microlink.io/?url={clean_url}&screenshot=true&embed=screenshot.url&viewport.width=390&viewport.height=844&viewport.isMobile=true&viewport.deviceScaleFactor=2"
+
+    try:
+        req = urllib.request.Request(microlink_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            img_bytes = resp.read()
+            screen_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception as e:
+        log.warning(f"[web_screenshot] Microlink error: {e}, trying thum.io fallback...")
+        try:
+            thum_url = f"https://image.thum.io/get/width/390/crop/844/mobile/{clean_url}"
+            req2 = urllib.request.Request(thum_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req2, timeout=12) as resp2:
+                img_bytes = resp2.read()
+                screen_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        except Exception as e2:
+            log.error(f"[web_screenshot] thum.io error: {e2}")
+
+    if not screen_img:
+        return json.dumps({"error": f"Gagal mengambil screenshot dari website {clean_url}. Pastikan URL dapat diakses."})
+
+    try:
+        iphone_mockup = _create_iphone_mockup(screen_img)
+        out_filename = "iphone_pov_screenshot.png"
+        out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+        iphone_mockup.save(out_path, "PNG")
+
+        PENDING_CONVERTED_FILES[user_id] = {
+            "out_path": out_path,
+            "out_filename": out_filename,
+            "src_path": None,
+        }
+        return json.dumps({
+            "status": "success",
+            "out_filename": out_filename,
+            "url": clean_url,
+            "message": f"Berhasil membuat screenshot iPhone POV dari {clean_url}. Gambar sedang dikirim..."
+        }, ensure_ascii=False)
+    except Exception as e:
+        log.error(f"[web_screenshot] mockup creation error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal memproses mockup iPhone: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -764,6 +895,7 @@ _TOOL_MAP = {
     "media_download": _tool_media_download,
     "remove_bg": _tool_remove_bg,
     "music_search": _tool_music_search,
+    "web_screenshot": _tool_web_screenshot,
 }
 
 

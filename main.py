@@ -89,6 +89,9 @@ Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
 
 HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
 
+📱 **iPhone Web Screenshot Mockup:**
+  `/iphone [url_website]` atau `/shot [url]` (Contoh: `/iphone github.com`) ➔ Screenshot tampilan HP iPhone 15 Pro POV!
+
 🎵 **Cari & Download Lagu MP3:**
   `/play [judul lagu / penyanyi]` atau `/lagu [judul]` (Contoh: `/play Komang Raim Laode`)
 
@@ -102,7 +105,7 @@ HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
   Kirim foto/file ➔ balas `ubah ke pdf`, `ke docx`, `ke png`, `ke txt`.
 
 📌 **Commands Lainnya:**
-  /k <hitung> — kalkulator (contoh: /k 250 * 15)
+  /k <hitung> — kalkulator (contoh: /k 7 x 7)
   /r <waktu> <pesan> — buat reminder (contoh: /r 2m minum air)
   /n atau /notes — lihat catatan tersimpan
   /c atau /clear — reset percakapan
@@ -688,6 +691,39 @@ def check_and_trigger_direct_music_search(user_id: int, text_content: str) -> bo
     return True
 
 
+def check_and_trigger_direct_web_screenshot(user_id: int, text_content: str) -> bool:
+    """If user text explicitly asks to screenshot a webpage into iPhone frame."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+
+    shot_keywords = ["screenshot iphone", "screenshot web", "tampilan iphone", "foto web", "ss web", "iphone pov", "shot web"]
+    matched_kw = None
+    for kw in shot_keywords:
+        if kw in txt:
+            matched_kw = kw
+            break
+
+    if not matched_kw:
+        return False
+
+    idx = txt.find(matched_kw) + len(matched_kw)
+    target_url = text_content[idx:].strip(" :,-")
+    if not target_url or "http" not in target_url:
+        match = re.search(r'https?://[^\s]+', text_content)
+        if match:
+            target_url = match.group(0)
+
+    if not target_url:
+        return False
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_shot] Direct web_screenshot triggered for user={user_id} url={target_url!r}")
+    res = execute_tool(user_id, "web_screenshot", {"url": target_url})
+    log.info(f"[auto_shot] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -924,6 +960,36 @@ async def handle_private_message(event):
                 await event.reply(f"❌ Format hitungan tidak valid. Contoh yang benar: `/k 7 x 7` atau `/k (10 + 5) * 2`")
             return
 
+        # Explicit slash commands for iPhone mockup screenshot: /iphone [url] or /shot [url]
+        if any(cmd_lower.startswith(p) for p in ["/iphone", "/shot", "!iphone", "!shot", ".iphone", ".shot"]):
+            target_url = re.sub(r'^[/#!\.](?:iphone|shot)\s*', '', text, flags=re.IGNORECASE).strip()
+            if not target_url:
+                await event.reply("📱 **Cara Pakai iPhone Mockup:** `/iphone [url_website]`\nContoh: `/iphone github.com` atau `/shot instagram.com`")
+                return
+
+            await event.reply(f"📱 Sip bro, lagi mengambil screenshot iPhone POV dari **{target_url}**...")
+            from agent_tools import execute_tool, pop_pending_converted_file
+            execute_tool(user_id, "web_screenshot", {"url": target_url})
+
+            pending = pop_pending_converted_file(user_id)
+            if pending:
+                out_path = pending["out_path"]
+                out_filename = pending["out_filename"]
+                await client.send_file(
+                    event.chat_id,
+                    out_path,
+                    force_document=True,
+                    caption=f"📱 Ini screenshot iPhone POV dari **{target_url}**!"
+                )
+                try:
+                    if os.path.exists(out_path):
+                        os.remove(out_path)
+                except Exception as e:
+                    log.warning(f"Failed to remove temp screenshot file: {e}")
+            else:
+                await event.reply(f"❌ Maaf bro, gagal mengambil screenshot dari website '{target_url}'. Pastikan link dapat diakses.")
+            return
+
         if text.startswith("/"):
             return
 
@@ -933,6 +999,7 @@ async def handle_private_message(event):
         media_triggered = False
         bg_triggered = False
         music_triggered = False
+        shot_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
@@ -941,6 +1008,8 @@ async def handle_private_message(event):
                     bg_triggered = check_and_trigger_direct_remove_bg(user_id, text)
                     if not bg_triggered:
                         music_triggered = check_and_trigger_direct_music_search(user_id, text)
+                        if not music_triggered:
+                            shot_triggered = check_and_trigger_direct_web_screenshot(user_id, text)
 
             if media_triggered:
                 await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
@@ -948,6 +1017,8 @@ async def handle_private_message(event):
                 await event.reply("✂️ Sip bro, background foto kamu lagi dihapus...")
             elif music_triggered:
                 await event.reply("🎵 Sip bro, lagi nyari dan ngunduh lagu kamu...")
+            elif shot_triggered:
+                await event.reply("📱 Sip bro, lagi mengambil screenshot iPhone POV...")
             elif not triggered:
                 reply = await asyncio.to_thread(run_agent, user_id, text)
                 await event.reply(reply)
