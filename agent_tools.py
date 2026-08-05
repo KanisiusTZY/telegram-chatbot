@@ -161,6 +161,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_bg",
+            "description": (
+                "Hapus background dari foto/gambar yang diunggah user. Bisa ubah ke transparan (PNG) atau pasfoto background merah/biru/putih. "
+                "Gunakan saat user minta hapus background foto, bikin PNG transparan, atau ubah warna background pasfoto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "bg_color": {
+                        "type": "string",
+                        "enum": ["transparent", "merah", "biru", "putih"],
+                        "description": "Warna background target: 'transparent' (default PNG), 'merah', 'biru', atau 'putih'.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -561,6 +582,69 @@ def _tool_media_download(user_id: int, url: str, extract_audio: bool = False) ->
         return json.dumps({"error": f"Gagal mengunduh media dari link tersebut: {str(e)}"})
 
 
+def _tool_remove_bg(user_id: int, bg_color: str = "transparent") -> str:
+    """Remove background from user's last uploaded photo and optionally apply background color."""
+    import time, os
+    log.info(f"[tool:remove_bg] user={user_id} bg_color={bg_color}")
+    file_info = USER_LAST_FILES.get(user_id)
+    if not file_info or not os.path.exists(file_info["path"]):
+        return json.dumps({
+            "error": "Belum ada foto yang kamu kirim. Silakan kirim foto dulu, baru minta hapus background."
+        })
+
+    src_path = file_info["path"]
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        from rembg import remove
+        from PIL import Image
+
+        input_img = Image.open(src_path)
+        no_bg = remove(input_img)
+
+        bg_color_clean = (bg_color or "transparent").lower().strip()
+        if bg_color_clean in ["merah", "red"]:
+            bg = Image.new("RGBA", no_bg.size, (220, 20, 20, 255))
+            bg.paste(no_bg, (0, 0), no_bg)
+            out_img = bg.convert("RGB")
+            out_filename = "photo_pasfoto_merah.jpg"
+            out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+            out_img.save(out_path, "JPEG")
+        elif bg_color_clean in ["biru", "blue"]:
+            bg = Image.new("RGBA", no_bg.size, (0, 102, 204, 255))
+            bg.paste(no_bg, (0, 0), no_bg)
+            out_img = bg.convert("RGB")
+            out_filename = "photo_pasfoto_biru.jpg"
+            out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+            out_img.save(out_path, "JPEG")
+        elif bg_color_clean in ["putih", "white"]:
+            bg = Image.new("RGBA", no_bg.size, (255, 255, 255, 255))
+            bg.paste(no_bg, (0, 0), no_bg)
+            out_img = bg.convert("RGB")
+            out_filename = "photo_pasfoto_putih.jpg"
+            out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+            out_img.save(out_path, "JPEG")
+        else:
+            out_filename = "photo_nobg.png"
+            out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+            no_bg.save(out_path, "PNG")
+
+        PENDING_CONVERTED_FILES[user_id] = {
+            "out_path": out_path,
+            "out_filename": out_filename,
+            "src_path": src_path,
+        }
+        return json.dumps({
+            "status": "success",
+            "out_filename": out_filename,
+            "message": f"Berhasil menghapus background foto. File '{out_filename}' sedang dikirim..."
+        })
+    except Exception as e:
+        log.error(f"[remove_bg] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal menghapus background foto: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -571,6 +655,7 @@ _TOOL_MAP = {
     "calculate": _tool_calculate,
     "file_convert": _tool_file_convert,
     "media_download": _tool_media_download,
+    "remove_bg": _tool_remove_bg,
 }
 
 

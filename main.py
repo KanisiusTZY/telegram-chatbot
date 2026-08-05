@@ -630,6 +630,31 @@ def check_and_trigger_direct_media_download(user_id: int, text_content: str) -> 
     return True
 
 
+def check_and_trigger_direct_remove_bg(user_id: int, text_content: str) -> bool:
+    """If user text explicitly requests background removal or pasfoto background change."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+
+    bg_keywords = ["hapus bg", "hapus background", "hilang bg", "hilangin bg", "hilangkan background", "remove bg", "remove background", "pasfoto", "bg merah", "bg biru", "bg putih", "transparan"]
+    if not any(kw in txt for kw in bg_keywords):
+        return False
+
+    bg_color = "transparent"
+    if "merah" in txt or "red" in txt:
+        bg_color = "merah"
+    elif "biru" in txt or "blue" in txt:
+        bg_color = "biru"
+    elif "putih" in txt or "white" in txt:
+        bg_color = "putih"
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_remove_bg] Direct remove_bg triggered for user={user_id} bg_color={bg_color}")
+    res = execute_tool(user_id, "remove_bg", {"bg_color": bg_color})
+    log.info(f"[auto_remove_bg] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -705,11 +730,16 @@ async def handle_private_message(event):
                     except Exception as e:
                         log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
 
-                # Check explicit conversion in caption first
+                # Check explicit conversion or remove_bg in caption first
                 triggered = check_and_trigger_direct_conversion(user_id, caption) if caption else False
+                bg_triggered = False
+                if not triggered and caption:
+                    bg_triggered = check_and_trigger_direct_remove_bg(user_id, caption)
 
                 if triggered:
                     await event.reply("⚡ Sip, foto kamu sedang diubah jadi PDF...")
+                elif bg_triggered:
+                    await event.reply("✂️ Sip bro, background foto kamu sedang dihapus...")
                 else:
                     reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
                     await event.reply(reply)
@@ -810,16 +840,22 @@ async def handle_private_message(event):
 
         triggered = False
         media_triggered = False
+        bg_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
                 media_triggered = check_and_trigger_direct_media_download(user_id, text)
-                if media_triggered:
-                    await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
-                else:
-                    reply = await asyncio.to_thread(run_agent, user_id, text)
-                    await event.reply(reply)
-                    log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+                if not media_triggered:
+                    bg_triggered = check_and_trigger_direct_remove_bg(user_id, text)
+
+            if media_triggered:
+                await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
+            elif bg_triggered:
+                await event.reply("✂️ Sip bro, background foto kamu lagi dihapus...")
+            elif not triggered:
+                reply = await asyncio.to_thread(run_agent, user_id, text)
+                await event.reply(reply)
+                log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
 
         # Check if a file conversion was triggered
         from agent_tools import pop_pending_converted_file
