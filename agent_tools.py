@@ -597,11 +597,12 @@ def _tool_remove_bg(user_id: int, bg_color: str = "transparent") -> str:
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
-        from rembg import remove
+        from rembg import remove, new_session
         from PIL import Image
 
         input_img = Image.open(src_path)
-        no_bg = remove(input_img)
+        session = new_session("u2netp")
+        no_bg = remove(input_img, session=session)
 
         bg_color_clean = (bg_color or "transparent").lower().strip()
         if bg_color_clean in ["merah", "red"]:
