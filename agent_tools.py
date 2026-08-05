@@ -129,11 +129,35 @@ TOOLS = [
                 "properties": {
                     "target_format": {
                         "type": "string",
-                        "enum": ["pdf", "docx", "jpg", "png", "txt"],
-                        "description": "Format tujuan konversi (pdf, docx, jpg, png, txt)",
+                        "enum": ["pdf", "docx", "png", "jpg", "txt"],
+                        "description": "Format target konversi.",
                     },
                 },
                 "required": ["target_format"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "media_download",
+            "description": (
+                "Unduh video atau MP3 audio dari link sosial media (TikTok, Instagram Reels, YouTube Shorts, Twitter/X, dll). "
+                "Gunakan saat user mengirimkan link media sosial atau meminta unduh video/audio dari link."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL/link media sosial yang mau diunduh.",
+                    },
+                    "extract_audio": {
+                        "type": "boolean",
+                        "description": "Set true jika user minta format MP3 / audio saja.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },
@@ -485,6 +509,58 @@ def _tool_calculate(user_id: int, expression: str) -> str:
         return json.dumps({"error": f"Gagal hitung: {e}"})
 
 
+def _tool_media_download(user_id: int, url: str, extract_audio: bool = False) -> str:
+    """Download video/audio from TikTok, Instagram, YouTube Shorts, Twitter/X using yt_dlp."""
+    import yt_dlp
+    import time, os
+
+    log.info(f"[tool:media_download] user={user_id} url={url!r} audio={extract_audio}")
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+    out_tmpl = os.path.join(temp_dir, f"media_{user_id}_{int(time.time())}.%(ext)s")
+
+    ydl_opts = {
+        "format": "bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/best",
+        "outtmpl": out_tmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": 48 * 1024 * 1024,
+    }
+
+    if extract_audio:
+        ydl_opts["format"] = "bestaudio/best"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+            if not os.path.exists(filename):
+                matches = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.startswith(f"media_{user_id}")]
+                if matches:
+                    filename = matches[0]
+
+            if os.path.exists(filename):
+                title = info.get("title", "media")
+                out_name = os.path.basename(filename)
+                PENDING_CONVERTED_FILES[user_id] = {
+                    "out_path": filename,
+                    "out_filename": out_name,
+                    "src_path": None,
+                }
+                return json.dumps({
+                    "status": "success",
+                    "title": title,
+                    "filename": out_name,
+                    "message": f"Berhasil mengunduh media '{title}'. File sedang dikirim ke chat."
+                }, ensure_ascii=False)
+            else:
+                return json.dumps({"error": "File media gagal diunduh atau ukuran melebihi batas 50 MB."})
+    except Exception as e:
+        log.error(f"[media_download] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal mengunduh media dari link tersebut: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -494,6 +570,7 @@ _TOOL_MAP = {
     "get_notes": _tool_get_notes,
     "calculate": _tool_calculate,
     "file_convert": _tool_file_convert,
+    "media_download": _tool_media_download,
 }
 
 

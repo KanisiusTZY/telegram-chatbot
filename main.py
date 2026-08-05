@@ -607,6 +607,29 @@ def check_and_trigger_direct_conversion(user_id: int, text_content: str) -> bool
     return False
 
 
+def check_and_trigger_direct_media_download(user_id: int, text_content: str) -> bool:
+    """If text contains a social media link (TikTok, IG Reels, YouTube Shorts, Twitter), download media directly."""
+    if not text_content:
+        return False
+
+    url_match = re.search(
+        r'https?://[^\s]+(?:tiktok\.com|instagram\.com/(?:p|reel|tv)|youtube\.com/shorts|youtu\.be|x\.com|twitter\.com)[^\s]*',
+        text_content,
+        re.IGNORECASE
+    )
+    if not url_match:
+        return False
+
+    target_url = url_match.group(0)
+    extract_audio = "mp3" in text_content.lower() or "lagu" in text_content.lower() or "audio" in text_content.lower()
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_media] Direct media download triggered for user={user_id} url={target_url}")
+    res = execute_tool(user_id, "media_download", {"url": target_url, "extract_audio": extract_audio})
+    log.info(f"[auto_media] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -786,12 +809,17 @@ async def handle_private_message(event):
         log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
 
         triggered = False
+        media_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
-                reply = await asyncio.to_thread(run_agent, user_id, text)
-                await event.reply(reply)
-                log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+                media_triggered = check_and_trigger_direct_media_download(user_id, text)
+                if media_triggered:
+                    await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
+                else:
+                    reply = await asyncio.to_thread(run_agent, user_id, text)
+                    await event.reply(reply)
+                    log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
 
         # Check if a file conversion was triggered
         from agent_tools import pop_pending_converted_file
