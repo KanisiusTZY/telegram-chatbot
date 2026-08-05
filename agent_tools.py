@@ -960,21 +960,23 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
             new_w = target_w
             new_h = target_h
 
-        # 1. High Quality Lanczos Resampling (Preserves exact Aspect Ratio)
-        hd_img = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        # 1. High Quality Sub-pixel Lanczos Resampling (Preserves exact Aspect Ratio)
+        hd_base = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # 2. Unsharp Mask Sharpening
-        hd_img = hd_img.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=3))
+        # 2. Wink APK Smooth Denoising Pass (removes JPEG noise & rough grain)
+        smoothed = hd_base.filter(ImageFilter.SMOOTH_MORE)
+        blended = Image.blend(hd_base, smoothed, alpha=0.30)
 
-        # 3. Color & Contrast Enhancement
-        color_enhancer = ImageEnhance.Color(hd_img)
-        hd_img = color_enhancer.enhance(1.12)
+        # 3. Edge Detail Polish (sharpens contours, text, eyes, UI lines)
+        detailed = blended.filter(ImageFilter.DETAIL)
 
-        contrast_enhancer = ImageEnhance.Contrast(hd_img)
-        hd_img = contrast_enhancer.enhance(1.08)
+        # 4. Smart Unsharp Masking with Threshold (prevents noisy/grainy artifacts)
+        hd_img = detailed.filter(ImageFilter.UnsharpMask(radius=3, percent=145, threshold=5))
 
-        sharpness_enhancer = ImageEnhance.Sharpness(hd_img)
-        hd_img = sharpness_enhancer.enhance(1.15)
+        # 5. Color, Contrast & Sharpness Polish (Wink Style Vivid Output)
+        hd_img = ImageEnhance.Color(hd_img).enhance(1.10)
+        hd_img = ImageEnhance.Contrast(hd_img).enhance(1.06)
+        hd_img = ImageEnhance.Sharpness(hd_img).enhance(1.12)
 
         out_filename = "photo_hd_remini.png"
         out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
