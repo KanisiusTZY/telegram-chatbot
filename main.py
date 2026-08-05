@@ -903,6 +903,27 @@ async def handle_private_message(event):
                 await event.reply(f"❌ Maaf bro, lagu '{query}' tidak ditemukan atau gagal diunduh.")
             return
 
+        # Explicit slash commands for calculator: /k [expr] or /calc [expr]
+        if any(cmd_lower.startswith(p) for p in ["/k", "/calc", "!k", "!calc", ".k", ".calc"]):
+            expr = re.sub(r'^[/#!\.](?:k|calc)\s*', '', text, flags=re.IGNORECASE).strip()
+            if not expr:
+                await event.reply("🔢 **Cara Pakai Kalkulator:** `/k [hitungan]`\nContoh: `/k 7 x 7`, `/k 10 : 2`, `/k 250 * 15`")
+                return
+
+            from agent_tools import execute_tool
+            res_str = execute_tool(user_id, "calculate", {"expression": expr})
+            try:
+                res_data = json.loads(res_str)
+                if "result" in res_data:
+                    await event.reply(f"🔢 Hasil: `{expr}` = **{res_data['result']}**")
+                elif "error" in res_data:
+                    await event.reply(f"❌ {res_data['error']}")
+                else:
+                    await event.reply(f"❌ Format hitungan tidak valid. Contoh yang benar: `/k 7 x 7` atau `/k (10 + 5) * 2`")
+            except Exception:
+                await event.reply(f"❌ Format hitungan tidak valid. Contoh yang benar: `/k 7 x 7` atau `/k (10 + 5) * 2`")
+            return
+
         if text.startswith("/"):
             return
 

@@ -534,20 +534,38 @@ def _tool_get_notes(user_id: int) -> str:
         return json.dumps({"error": str(e)})
 
 
+def clean_math_expression(expr: str) -> str:
+    """Clean Indonesian math notation like '7 x 7', '7 v 7', '10 : 2', '3,14'."""
+    expr = expr.strip()
+    # Replace 'x' or 'X' or 'v' or 'V' between numbers or parentheses with '*'
+    expr = re.sub(r'(\d+|\))\s*[xXvV]\s*(\d+|\()', r'\1 * \2', expr)
+    # Replace ':' between numbers or parentheses with '/'
+    expr = re.sub(r'(\d+|\))\s*:\s*(\d+|\()', r'\1 / \2', expr)
+    # Replace '^' exponent with '**'
+    expr = expr.replace('^', '**')
+    # Replace Indonesian comma decimal separator (e.g. 3,14 -> 3.14)
+    expr = re.sub(r'(\d+),(\d+)', r'\1.\2', expr)
+    return expr
+
+
 def _tool_calculate(user_id: int, expression: str) -> str:
-    log.info(f"[tool:calculate] user={user_id} expr={expression!r}")
+    log.info(f"[tool:calculate] user={user_id} raw_expr={expression!r}")
+    clean_expr = clean_math_expression(expression)
+    log.info(f"[tool:calculate] cleaned_expr={clean_expr!r}")
+
     try:
         import math
         names = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
         names["math"] = math
-        result = simple_eval(expression, names=names)
-        return json.dumps({"expression": expression, "result": result})
-    except InvalidExpression as e:
-        return json.dumps({"error": f"Ekspresi tidak valid: {e}"})
+        result = simple_eval(clean_expr, names=names)
+        return json.dumps({"expression": expression, "clean_expression": clean_expr, "result": result})
+    except InvalidExpression:
+        return json.dumps({"error": f"Format hitungan '{expression}' kurang pas. Contoh yang benar: '7 x 7' atau '(10 + 5) * 2'."})
     except ZeroDivisionError:
-        return json.dumps({"error": "Pembagian dengan nol."})
+        return json.dumps({"error": "Pembagian dengan nol tidak diperbolehkan."})
     except Exception as e:
-        return json.dumps({"error": f"Gagal hitung: {e}"})
+        log.error(f"[tool:calculate] error: {e}")
+        return json.dumps({"error": f"Gagal menghitung '{expression}'. Pastikan menggunakan angka dan simbol matematika yang benar."})
 
 
 def _tool_media_download(user_id: int, url: str, extract_audio: bool = False) -> str:
