@@ -561,12 +561,18 @@ def _tool_media_download(user_id: int, url: str, extract_audio: bool = False) ->
     out_tmpl = os.path.join(temp_dir, f"media_{user_id}_{int(time.time())}.%(ext)s")
 
     ydl_opts = {
-        "format": "bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/best",
+        "format": "best[filesize<48M]/b[filesize<48M]/bestvideo[filesize<45M]+bestaudio[filesize<45M]/best",
         "outtmpl": out_tmpl,
         "quiet": True,
         "no_warnings": True,
         "max_filesize": 48 * 1024 * 1024,
     }
+
+    try:
+        import imageio_ffmpeg
+        ydl_opts["ffmpeg_location"] = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
+        log.warning(f"imageio_ffmpeg not available: {e}")
 
     if extract_audio:
         ydl_opts["format"] = "bestaudio/best"
@@ -684,6 +690,12 @@ def _tool_music_search(user_id: int, query: str) -> str:
         "default_search": "ytsearch1",
         "max_filesize": 48 * 1024 * 1024,
     }
+
+    try:
+        import imageio_ffmpeg
+        ydl_opts["ffmpeg_location"] = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
+        log.warning(f"imageio_ffmpeg not available: {e}")
 
     search_term = f"ytsearch1:{query}"
     try:
