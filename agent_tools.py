@@ -773,55 +773,55 @@ def _tool_music_search(user_id: int, query: str) -> str:
 
 
 def _create_iphone_mockup(screen_img) -> "Image.Image":
-    """Wrap a mobile screenshot inside a sleek iPhone 15 Pro device mockup frame."""
+    """Render a clean, native iPhone screen screenshot (Status Bar, Time, 5G, Battery, Dynamic Island, Home Bar)."""
     from PIL import Image, ImageDraw
+    import datetime
 
     target_w, target_h = 390, 844
     screen_resized = screen_img.resize((target_w, target_h), Image.Resampling.LANCZOS).convert("RGB")
+    draw = ImageDraw.Draw(screen_resized)
 
-    padding = 24
-    frame_width = target_w + (padding * 2)
-    frame_height = target_h + (padding * 2)
+    # 1. Top Status Bar Overlay (Time, Dynamic Island, 5G, Battery)
+    now_str = datetime.datetime.now().strftime("%H:%M")
 
-    img = Image.new("RGBA", (frame_width, frame_height), (0, 0, 0, 0))
-    canvas_draw = ImageDraw.Draw(img)
+    # Time (Left)
+    draw.text((28, 14), now_str, fill="white")
 
-    body_radius = 48
-    canvas_draw.rounded_rectangle(
-        [0, 0, frame_width, frame_height],
-        radius=body_radius,
-        fill="#1C1C1E",
-        outline="#3A3A3C",
-        width=3
-    )
-
-    screen_radius = 36
-    mask = Image.new("L", (target_w, target_h), 0)
-    mask_draw = ImageDraw.Draw(mask)
-    mask_draw.rounded_rectangle([0, 0, target_w, target_h], radius=screen_radius, fill=255)
-
-    img.paste(screen_resized, (padding, padding), mask)
-
-    island_w, island_h = 110, 28
-    island_x = (frame_width - island_w) // 2
-    island_y = padding + 10
-    overlay_draw = ImageDraw.Draw(img)
-    overlay_draw.rounded_rectangle(
+    # Dynamic Island (Center Top)
+    island_w, island_h = 115, 30
+    island_x = (target_w - island_w) // 2
+    island_y = 11
+    draw.rounded_rectangle(
         [island_x, island_y, island_x + island_w, island_y + island_h],
-        radius=14,
-        fill="#000000"
+        radius=15,
+        fill="black"
     )
 
+    # Battery & 5G (Right)
+    draw.rounded_rectangle([target_w - 48, 17, target_w - 24, 29], radius=3, outline="white", width=1)
+    draw.rectangle([target_w - 46, 19, target_w - 28, 27], fill="white")
+    draw.rectangle([target_w - 23, 21, target_w - 22, 25], fill="white")
+    draw.text((target_w - 75, 14), "5G", fill="white")
+
+    # 2. Bottom Home Indicator Bar
     bar_w, bar_h = 134, 5
-    bar_x = (frame_width - bar_w) // 2
-    bar_y = frame_height - padding - 12
-    overlay_draw.rounded_rectangle(
+    bar_x = (target_w - bar_w) // 2
+    bar_y = target_h - 14
+    draw.rounded_rectangle(
         [bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
         radius=3,
-        fill="#FFFFFF"
+        fill="white"
     )
 
-    return img
+    # 3. Rounded iOS Screen Corners Mask (radius=44px)
+    mask = Image.new("L", (target_w, target_h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([0, 0, target_w, target_h], radius=44, fill=255)
+
+    out_img = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+    out_img.paste(screen_resized, (0, 0), mask)
+
+    return out_img
 
 
 def _tool_web_screenshot(user_id: int, url: str) -> str:
