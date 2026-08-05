@@ -948,7 +948,7 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
         target_w = w * scale_factor
         target_h = h * scale_factor
 
-        max_dim = 4000
+        max_dim = 2560
         if target_w > max_dim or target_h > max_dim:
             if target_w >= target_h:
                 new_w = max_dim
@@ -960,23 +960,18 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
             new_w = target_w
             new_h = target_h
 
-        # 1. High Quality Sub-pixel Lanczos Resampling (Preserves exact Aspect Ratio)
-        hd_base = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        # 1. In-place High Quality Lanczos Resampling (Preserves exact Aspect Ratio)
+        hd_img = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # 2. Wink APK Smooth Denoising Pass (removes JPEG noise & rough grain)
-        smoothed = hd_base.filter(ImageFilter.SMOOTH_MORE)
-        blended = Image.blend(hd_base, smoothed, alpha=0.30)
+        # 2. Smooth Denoising filter (removes JPEG artifacts without doubling memory)
+        hd_img = hd_img.filter(ImageFilter.SMOOTH)
 
-        # 3. Edge Detail Polish (sharpens contours, text, eyes, UI lines)
-        detailed = blended.filter(ImageFilter.DETAIL)
+        # 3. Smart Edge Sharpening (High Threshold prevents grainy noise)
+        hd_img = hd_img.filter(ImageFilter.UnsharpMask(radius=2, percent=135, threshold=4))
 
-        # 4. Smart Unsharp Masking with Threshold (prevents noisy/grainy artifacts)
-        hd_img = detailed.filter(ImageFilter.UnsharpMask(radius=3, percent=145, threshold=5))
-
-        # 5. Color, Contrast & Sharpness Polish (Wink Style Vivid Output)
-        hd_img = ImageEnhance.Color(hd_img).enhance(1.10)
-        hd_img = ImageEnhance.Contrast(hd_img).enhance(1.06)
-        hd_img = ImageEnhance.Sharpness(hd_img).enhance(1.12)
+        # 4. Color & Contrast Polish (Wink Style Vivid Output)
+        hd_img = ImageEnhance.Color(hd_img).enhance(1.08)
+        hd_img = ImageEnhance.Contrast(hd_img).enhance(1.05)
 
         out_filename = "photo_hd_remini.png"
         out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
