@@ -89,6 +89,9 @@ Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
 
 HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
 
+✨ **Penjernih Foto HD (Remini Quality):**
+  Kirim foto ➔ balas `hd` / `jernihkan` / `remini` (atau `/hd`) ➔ Foto otomatis 4x di-upscale & dipertajam ke HD!
+
 📱 **iPhone Web Screenshot Mockup:**
   `/iphone [url_website]` atau `/shot [url]` (Contoh: `/iphone github.com`) ➔ Screenshot tampilan HP iPhone 15 Pro POV!
 
@@ -724,6 +727,23 @@ def check_and_trigger_direct_web_screenshot(user_id: int, text_content: str) -> 
     return True
 
 
+def check_and_trigger_direct_upscale(user_id: int, text_content: str) -> bool:
+    """If user text explicitly asks to upscale/enhance a photo to HD Remini quality."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+
+    hd_keywords = ["hd", "upscale", "jernihkan", "perjelas", "remini", "bikin hd", "pertajam", "biar hd", "penjernih"]
+    if not any(kw in txt for kw in hd_keywords):
+        return False
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_upscale] Direct upscale_image triggered for user={user_id}")
+    res = execute_tool(user_id, "upscale_image", {"scale": 4})
+    log.info(f"[auto_upscale] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -799,16 +819,21 @@ async def handle_private_message(event):
                     except Exception as e:
                         log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
 
-                # Check explicit conversion or remove_bg in caption first
+                # Check explicit conversion, remove_bg, or upscale HD in caption first
                 triggered = check_and_trigger_direct_conversion(user_id, caption) if caption else False
                 bg_triggered = False
+                hd_triggered = False
                 if not triggered and caption:
                     bg_triggered = check_and_trigger_direct_remove_bg(user_id, caption)
+                    if not bg_triggered:
+                        hd_triggered = check_and_trigger_direct_upscale(user_id, caption)
 
                 if triggered:
                     await event.reply("⚡ Sip, foto kamu sedang diubah jadi PDF...")
                 elif bg_triggered:
                     await event.reply("✂️ Sip bro, background foto kamu sedang dihapus...")
+                elif hd_triggered:
+                    await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
                 else:
                     reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
                     await event.reply(reply)
@@ -990,6 +1015,31 @@ async def handle_private_message(event):
                 await event.reply(f"❌ Maaf bro, gagal mengambil screenshot dari website '{target_url}'. Pastikan link dapat diakses.")
             return
 
+        # Explicit slash commands for HD Image Upscaler / Remini: /hd, /upscale, /remini
+        if any(cmd_lower.startswith(p) for p in ["/hd", "/upscale", "/remini", "!hd", "!remini", ".hd", ".remini"]):
+            await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
+            from agent_tools import execute_tool, pop_pending_converted_file
+            execute_tool(user_id, "upscale_image", {"scale": 4})
+
+            pending = pop_pending_converted_file(user_id)
+            if pending:
+                out_path = pending["out_path"]
+                out_filename = pending["out_filename"]
+                await client.send_file(
+                    event.chat_id,
+                    out_path,
+                    force_document=True,
+                    caption=f"✨ Ini foto kamu yang sudah dijernihkan ke HD (Remini Quality)!"
+                )
+                try:
+                    if os.path.exists(out_path):
+                        os.remove(out_path)
+                except Exception as e:
+                    log.warning(f"Failed to remove temp HD file: {e}")
+            else:
+                await event.reply("❌ Belum ada foto yang kamu kirim bro. Kirim/balas foto dulu, baru ketik `/hd`!")
+            return
+
         if text.startswith("/"):
             return
 
@@ -1000,6 +1050,7 @@ async def handle_private_message(event):
         bg_triggered = False
         music_triggered = False
         shot_triggered = False
+        hd_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
@@ -1010,6 +1061,8 @@ async def handle_private_message(event):
                         music_triggered = check_and_trigger_direct_music_search(user_id, text)
                         if not music_triggered:
                             shot_triggered = check_and_trigger_direct_web_screenshot(user_id, text)
+                            if not shot_triggered:
+                                hd_triggered = check_and_trigger_direct_upscale(user_id, text)
 
             if media_triggered:
                 await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
@@ -1019,6 +1072,8 @@ async def handle_private_message(event):
                 await event.reply("🎵 Sip bro, lagi nyari dan ngunduh lagu kamu...")
             elif shot_triggered:
                 await event.reply("📱 Sip bro, lagi mengambil screenshot iPhone POV...")
+            elif hd_triggered:
+                await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
             elif not triggered:
                 reply = await asyncio.to_thread(run_agent, user_id, text)
                 await event.reply(reply)

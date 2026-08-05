@@ -222,6 +222,26 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "upscale_image",
+            "description": (
+                "Jernihkan foto buram/pecah dan tingkatkan resolusi foto ke HD (4x Upscale + Sharpening Remini Quality). "
+                "Gunakan saat user minta 'hd', 'upscale', 'jernihkan foto', 'perjelas foto', atau 'remini'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scale": {
+                        "type": "integer",
+                        "description": "Faktor perbesaran resolusi (default 4x).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -883,6 +903,67 @@ def _tool_web_screenshot(user_id: int, url: str) -> str:
         return json.dumps({"error": f"Gagal memproses mockup iPhone: {str(e)}"})
 
 
+def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
+    """Enhance and upscale user's last uploaded photo to HD Remini-style quality."""
+    import time, os
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    log.info(f"[tool:upscale_image] user={user_id} scale={scale}")
+    file_info = USER_LAST_FILES.get(user_id)
+    if not file_info or not os.path.exists(file_info["path"]):
+        return json.dumps({
+            "error": "Belum ada foto yang kamu kirim. Silakan kirim foto dulu, baru minta jernihkan / upscale HD."
+        })
+
+    src_path = file_info["path"]
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        input_img = Image.open(src_path).convert("RGB")
+        w, h = input_img.size
+
+        scale_factor = scale if scale in [2, 3, 4] else 4
+        new_w = min(w * scale_factor, 4000)
+        new_h = min(h * scale_factor, 4000)
+
+        # 1. High Quality 4x Lanczos Resampling
+        hd_img = input_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # 2. Unsharp Mask Sharpening
+        hd_img = hd_img.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=3))
+
+        # 3. Color & Contrast Enhancement
+        color_enhancer = ImageEnhance.Color(hd_img)
+        hd_img = color_enhancer.enhance(1.12)
+
+        contrast_enhancer = ImageEnhance.Contrast(hd_img)
+        hd_img = contrast_enhancer.enhance(1.08)
+
+        sharpness_enhancer = ImageEnhance.Sharpness(hd_img)
+        hd_img = sharpness_enhancer.enhance(1.15)
+
+        out_filename = "photo_hd_remini.png"
+        out_path = os.path.join(temp_dir, f"out_{user_id}_{int(time.time())}_{out_filename}")
+        hd_img.save(out_path, "PNG", compress_level=6)
+
+        PENDING_CONVERTED_FILES[user_id] = {
+            "out_path": out_path,
+            "out_filename": out_filename,
+            "src_path": src_path,
+        }
+        return json.dumps({
+            "status": "success",
+            "out_filename": out_filename,
+            "original_size": f"{w}x{h}",
+            "hd_size": f"{new_w}x{new_h}",
+            "message": f"Berhasil menjernihkan foto ({w}x{h} ➔ {new_w}x{new_h} HD). File HD sedang dikirim..."
+        }, ensure_ascii=False)
+    except Exception as e:
+        log.error(f"[upscale_image] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal menjernihkan foto: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -896,6 +977,7 @@ _TOOL_MAP = {
     "remove_bg": _tool_remove_bg,
     "music_search": _tool_music_search,
     "web_screenshot": _tool_web_screenshot,
+    "upscale_image": _tool_upscale_image,
 }
 
 
