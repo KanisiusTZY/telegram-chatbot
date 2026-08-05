@@ -87,21 +87,26 @@ Penggunaan Tools (Belakang Layar):
 
 Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
 
-HELP_TEXT = """Halo! Aku siap bantu kamu. Berikut yang bisa kamu gunakan:
+HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
 
-💬 Ngobrol & Diskusi — kirim pesan biasa (misal "apa itu btr", "ingetin 5m minum air"), AI otomatis paham & cari di internet jika perlu!
+🎵 **Cari & Download Lagu MP3:**
+  `/play [judul lagu / penyanyi]` atau `/lagu [judul]` (Contoh: `/play Komang Raim Laode`)
 
-📌 Commands Singkat (Ketik langsung di chat):
-  /k <hitung> atau /calc   — hitung kalkulator (contoh: /k 250 * 15)
-  /r <waktu> <pesan>       — buat reminder singkat (contoh: /r 2m minum air)
-  /n    atau /notes        — lihat daftar catatan
-  /c    atau /clear        — bersihkan percakapan
-  /on   atau /aion         — aktifkan AI di chat ini
-  /off  atau /aioff        — matikan AI di chat ini
-  /onall atau /offall      — aktifkan / matikan AI untuk semua chat
-  /h    atau /help         — tampilkan bantuan ini
+📥 **Social Media Video Downloader:**
+  Paste link TikTok, IG Reels, YouTube Shorts, atau Twitter/X ➔ Video MP4 otomatis diunduh!
 
-🖼️ Gambar — kirim gambar/foto untuk dianalisis, dibaca teksnya, atau dihitung isinya!"""
+✂️ **Hapus Background Foto & Pasfoto:**
+  Kirim foto ➔ balas `hapus bg` (PNG transparan) atau `bg merah` / `bg biru` (pasfoto formal).
+
+📄 **Konversi File:**
+  Kirim foto/file ➔ balas `ubah ke pdf`, `ke docx`, `ke png`, `ke txt`.
+
+📌 **Commands Lainnya:**
+  /k <hitung> — kalkulator (contoh: /k 250 * 15)
+  /r <waktu> <pesan> — buat reminder (contoh: /r 2m minum air)
+  /n atau /notes — lihat catatan tersimpan
+  /c atau /clear — reset percakapan
+  /on atau /off — matikan/hidupkan AI"""
 
 
 # ─── Rate Limiter ────────────────────────────────────────────────────────────
@@ -865,7 +870,40 @@ async def handle_private_message(event):
 
         # ── Text handling ─────────────────────────────────────────────────────
         text = event.raw_text.strip()
-        if not text or text.startswith("/"):
+        if not text:
+            return
+
+        # Explicit slash commands for music: /play, /lagu, /music, /mp3
+        cmd_lower = text.lower()
+        if any(cmd_lower.startswith(p) for p in ["/play", "/lagu", "/music", "/mp3", "!play", "!lagu", ".play", ".lagu"]):
+            query = re.sub(r'^[/#!\.](?:play|lagu|music|mp3)\s*', '', text, flags=re.IGNORECASE).strip()
+            if not query:
+                await event.reply("🎵 **Cara Pakai:** `/play [judul lagu / nama penyanyi]`\nContoh: `/play Komang Raim Laode` atau `/lagu Sheila on 7`")
+                return
+
+            await event.reply(f"🎵 Sip bro, lagi nyari dan ngunduh lagu **{query}**...")
+            from agent_tools import execute_tool, pop_pending_converted_file
+            execute_tool(user_id, "music_search", {"query": query})
+
+            pending = pop_pending_converted_file(user_id)
+            if pending:
+                out_path = pending["out_path"]
+                out_filename = pending["out_filename"]
+                await client.send_file(
+                    event.chat_id,
+                    out_path,
+                    caption=f"🎶 Ini lagu **{out_filename}** request kamu!"
+                )
+                try:
+                    if os.path.exists(out_path):
+                        os.remove(out_path)
+                except Exception as e:
+                    log.warning(f"Failed to remove temp music file: {e}")
+            else:
+                await event.reply(f"❌ Maaf bro, lagu '{query}' tidak ditemukan atau gagal diunduh.")
+            return
+
+        if text.startswith("/"):
             return
 
         log.info(f"📥 [{username}|{user_id}] {text[:100]}{'...' if len(text) > 100 else ''}")
