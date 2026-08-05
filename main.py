@@ -89,6 +89,9 @@ Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
 
 HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
 
+🧠 **AI Tutor Jawab Soal (Matematika & Sains):**
+  `/jawab [soal]` atau kirim foto soal ➔ balas `jawab soal ini` ➔ AI menyelesaikan soal matematika/sains langkah demi langkah!
+
 ✨ **Penjernih Foto HD (Remini Quality):**
   Kirim foto ➔ balas `hd` / `jernihkan` / `remini` (atau `/hd`) ➔ Foto otomatis 4x di-upscale & dipertajam ke HD!
 
@@ -744,6 +747,23 @@ def check_and_trigger_direct_upscale(user_id: int, text_content: str) -> bool:
     return True
 
 
+def check_and_trigger_direct_math_solver(user_id: int, text_content: str) -> bool:
+    """If user text explicitly asks to solve a math/science/homework question."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+
+    math_keywords = ["jawab soal", "bantu jawab", "selesaikan soal", "cara pengerjaan", "kunci jawaban", "jawabkan", "solver"]
+    if not any(kw in txt for kw in math_keywords):
+        return False
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_math] Direct math_solver triggered for user={user_id}")
+    res = execute_tool(user_id, "math_solver", {"question": text_content})
+    log.info(f"[auto_math] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -819,14 +839,17 @@ async def handle_private_message(event):
                     except Exception as e:
                         log.error(f"Gagal save ke Saved Messages: {e}", exc_info=True)
 
-                # Check explicit conversion, remove_bg, or upscale HD in caption first
+                # Check explicit conversion, remove_bg, upscale HD, or math_solver in caption first
                 triggered = check_and_trigger_direct_conversion(user_id, caption) if caption else False
                 bg_triggered = False
                 hd_triggered = False
+                solve_triggered = False
                 if not triggered and caption:
                     bg_triggered = check_and_trigger_direct_remove_bg(user_id, caption)
                     if not bg_triggered:
                         hd_triggered = check_and_trigger_direct_upscale(user_id, caption)
+                        if not hd_triggered:
+                            solve_triggered = check_and_trigger_direct_math_solver(user_id, caption)
 
                 if triggered:
                     await event.reply("⚡ Sip, foto kamu sedang diubah jadi PDF...")
@@ -834,6 +857,8 @@ async def handle_private_message(event):
                     await event.reply("✂️ Sip bro, background foto kamu sedang dihapus...")
                 elif hd_triggered:
                     await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
+                elif solve_triggered:
+                    await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal foto kamu...")
                 else:
                     reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
                     await event.reply(reply)
@@ -1040,6 +1065,25 @@ async def handle_private_message(event):
                 await event.reply("❌ Belum ada foto yang kamu kirim bro. Kirim/balas foto dulu, baru ketik `/hd`!")
             return
 
+        # Explicit slash commands for AI Math & Homework Solver: /jawab [soal] or /soal [soal]
+        if any(cmd_lower.startswith(p) for p in ["/jawab", "/soal", "/tanya", "!jawab", "!soal", ".jawab", ".soal"]):
+            question_text = re.sub(r'^[/#!\.](?:jawab|soal|tanya)\s*', '', text, flags=re.IGNORECASE).strip()
+            await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal kamu...")
+            from agent_tools import execute_tool
+            res_str = execute_tool(user_id, "math_solver", {"question": question_text})
+            try:
+                res_data = json.loads(res_str)
+                if "answer" in res_data:
+                    await event.reply(res_data["answer"])
+                elif "error" in res_data:
+                    await event.reply(f"❌ {res_data['error']}")
+                else:
+                    await event.reply("❌ Gagal mendapatkan jawaban soal. Silakan coba lagi.")
+            except Exception as e:
+                log.error(f"Error parsing math solver reply: {e}")
+                await event.reply("❌ Terjadi kesalahan saat memproses jawaban soal.")
+            return
+
         if text.startswith("/"):
             return
 
@@ -1051,6 +1095,7 @@ async def handle_private_message(event):
         music_triggered = False
         shot_triggered = False
         hd_triggered = False
+        solve_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
@@ -1063,6 +1108,8 @@ async def handle_private_message(event):
                             shot_triggered = check_and_trigger_direct_web_screenshot(user_id, text)
                             if not shot_triggered:
                                 hd_triggered = check_and_trigger_direct_upscale(user_id, text)
+                                if not hd_triggered:
+                                    solve_triggered = check_and_trigger_direct_math_solver(user_id, text)
 
             if media_triggered:
                 await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
@@ -1074,6 +1121,8 @@ async def handle_private_message(event):
                 await event.reply("📱 Sip bro, lagi mengambil screenshot iPhone POV...")
             elif hd_triggered:
                 await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
+            elif solve_triggered:
+                await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal kamu...")
             elif not triggered:
                 reply = await asyncio.to_thread(run_agent, user_id, text)
                 await event.reply(reply)

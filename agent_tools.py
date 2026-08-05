@@ -8,6 +8,7 @@ Each tool has:
 
 import json
 import logging
+import base64
 from datetime import datetime, timezone
 
 from simpleeval import simple_eval, EvalWithCompoundTypes, InvalidExpression
@@ -239,6 +240,26 @@ TOOLS = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "math_solver",
+            "description": (
+                "Bantu selesaikan soal matematika, fisika, kimia, atau soal akademis dari foto/teks secara runtut dan jelas. "
+                "Gunakan saat user minta '/jawab [soal]', '/soal [soal]', 'bantu jawab soal ini', atau 'selesaikan soal'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Teks soal atau deskripsi masalah akademis/matematika yang ingin diselesaikan.",
+                    },
+                },
+                "required": ["question"],
             },
         },
     },
@@ -964,6 +985,71 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
         return json.dumps({"error": f"Gagal menjernihkan foto: {str(e)}"})
 
 
+def _tool_math_solver(user_id: int, question: str = "") -> str:
+    """Solve math, physics, chemistry, or academic problems step-by-step."""
+    import os, base64
+    log.info(f"[tool:math_solver] user={user_id} question={question!r}")
+
+    file_info = USER_LAST_FILES.get(user_id)
+    has_photo = file_info and os.path.exists(file_info["path"])
+
+    solver_prompt = (
+        "Kamu adalah Tutor AI Jenius yang sangat ahli Matematika, Fisika, Kimia, dan Soal Akademis. "
+        "Tugasmu adalah menganalisis dan menyelesaikan soal dengan format super rapi:\n"
+        "1. 📝 **Identifikasi Soal:** Tuliskan ulang soal dengan jelas.\n"
+        "2. 💡 **Rumus / Konsep yang Digunakan:** Sebutkan rumus utama yang dipakai.\n"
+        "3. 🔍 **Langkah-Langkah Penyelesaian:** Berikan penjelasan runtut, logis, dan gampang dipahami.\n"
+        "4. ✅ **Jawaban Akhir:** Highlight hasil/jawaban akhir dengan tebal.\n\n"
+        f"Soal/Pertanyaan User: {question or 'Tolong jawab dan selesaikan soal yang ada pada foto ini.'}"
+    )
+
+    try:
+        from groq import Groq
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            return json.dumps({"error": "GROQ_API_KEY belum dikonfigurasi di environment."})
+        client = Groq(api_key=api_key)
+
+        if has_photo:
+            with open(file_info["path"], "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+
+            resp = client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": solver_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                        ]
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+            )
+            answer = resp.choices[0].message.content
+        else:
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "Kamu adalah Tutor AI Jenius matematika & sains."},
+                    {"role": "user", "content": solver_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+            )
+            answer = resp.choices[0].message.content
+
+        return json.dumps({
+            "status": "success",
+            "answer": answer,
+        }, ensure_ascii=False)
+    except Exception as e:
+        log.error(f"[math_solver] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal menyelesaikan soal: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -978,6 +1064,7 @@ _TOOL_MAP = {
     "music_search": _tool_music_search,
     "web_screenshot": _tool_web_screenshot,
     "upscale_image": _tool_upscale_image,
+    "math_solver": _tool_math_solver,
 }
 
 
