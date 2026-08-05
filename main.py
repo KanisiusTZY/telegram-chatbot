@@ -178,7 +178,10 @@ def parse_remind_time(time_str: str) -> datetime | None:
 
 # ─── Agent Loop ──────────────────────────────────────────────────────────────
 
-FUNCTION_CALL_PATTERN = re.compile(r'<function=(\w+)>(\{.*?\})</function>', re.DOTALL)
+FUNCTION_CALL_PATTERN = re.compile(
+    r'(?:<)?(?:function=)?([a-zA-Z0-9_]+)>(?:```json\s*)?(\{.*?\})(?:```)?(?:</function>)?',
+    re.DOTALL
+)
 
 
 def extract_manual_function_call(content: str):
@@ -345,7 +348,7 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
                 continue
 
             # 3. Safety net filter before final return
-            if "<function=" in reply or "tool_call" in reply.lower():
+            if "<function=" in reply or "function=" in reply or "tool_call" in reply.lower():
                 log.warning(f"⚠️ [agent] Unhandled tool leakage blocked: {reply[:200]}")
                 reply = "Waduh, gua lagi mikir keras nih, coba tanya lagi deh wkwk 😅"
 
