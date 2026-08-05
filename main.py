@@ -655,6 +655,34 @@ def check_and_trigger_direct_remove_bg(user_id: int, text_content: str) -> bool:
     return True
 
 
+def check_and_trigger_direct_music_search(user_id: int, text_content: str) -> bool:
+    """If user text explicitly asks to search/download a song, execute music_search directly."""
+    if not text_content:
+        return False
+    txt = text_content.strip().lower()
+
+    music_keywords = ["cari lagu", "search lagu", "download lagu", "download mp3", "carikan lagu", "putar lagu", "dengerin lagu", "minta lagu"]
+    matched_kw = None
+    for kw in music_keywords:
+        if kw in txt:
+            matched_kw = kw
+            break
+
+    if not matched_kw:
+        return False
+
+    idx = txt.find(matched_kw) + len(matched_kw)
+    search_query = text_content[idx:].strip(" :,-")
+    if not search_query:
+        search_query = text_content.strip()
+
+    from agent_tools import execute_tool
+    log.info(f"[auto_music] Direct music_search triggered for user={user_id} query={search_query!r}")
+    res = execute_tool(user_id, "music_search", {"query": search_query})
+    log.info(f"[auto_music] execute_tool result: {res}")
+    return True
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def handle_private_message(event):
     sender = await event.get_sender()
@@ -845,17 +873,22 @@ async def handle_private_message(event):
         triggered = False
         media_triggered = False
         bg_triggered = False
+        music_triggered = False
         async with client.action(event.chat_id, "typing"):
             triggered = check_and_trigger_direct_conversion(user_id, text)
             if not triggered:
                 media_triggered = check_and_trigger_direct_media_download(user_id, text)
                 if not media_triggered:
                     bg_triggered = check_and_trigger_direct_remove_bg(user_id, text)
+                    if not bg_triggered:
+                        music_triggered = check_and_trigger_direct_music_search(user_id, text)
 
             if media_triggered:
                 await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
             elif bg_triggered:
                 await event.reply("✂️ Sip bro, background foto kamu lagi dihapus...")
+            elif music_triggered:
+                await event.reply("🎵 Sip bro, lagi nyari dan ngunduh lagu kamu...")
             elif not triggered:
                 reply = await asyncio.to_thread(run_agent, user_id, text)
                 await event.reply(reply)

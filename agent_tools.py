@@ -182,6 +182,26 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "music_search",
+            "description": (
+                "Cari dan unduh lagu/musik MP3 berdasarkan judul lagu atau nama penyanyi. "
+                "Gunakan saat user minta 'cari lagu [judul]', 'download mp3 [judul]', atau 'setel lagu [judul]'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Judul lagu atau nama penyanyi yang ingin dicari (misal 'Komang Raim Laode', 'Melompat Lebih Tinggi Sheila on 7').",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -646,6 +666,62 @@ def _tool_remove_bg(user_id: int, bg_color: str = "transparent") -> str:
         return json.dumps({"error": f"Gagal menghapus background foto: {str(e)}"})
 
 
+def _tool_music_search(user_id: int, query: str) -> str:
+    """Search for music/song by title or artist and download high-quality MP3 directly."""
+    import yt_dlp
+    import time, os
+
+    log.info(f"[tool:music_search] user={user_id} query={query!r}")
+    temp_dir = "temp_files"
+    os.makedirs(temp_dir, exist_ok=True)
+    out_tmpl = os.path.join(temp_dir, f"music_{user_id}_{int(time.time())}.%(ext)s")
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": out_tmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "default_search": "ytsearch1",
+        "max_filesize": 48 * 1024 * 1024,
+    }
+
+    search_term = f"ytsearch1:{query}"
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(search_term, download=True)
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
+
+            filename = ydl.prepare_filename(info)
+            if not os.path.exists(filename):
+                matches = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.startswith(f"music_{user_id}")]
+                if matches:
+                    filename = matches[0]
+
+            if os.path.exists(filename):
+                title = info.get("title", query)
+                uploader = info.get("uploader", "Music")
+                out_name = f"{title}.mp3"
+
+                PENDING_CONVERTED_FILES[user_id] = {
+                    "out_path": filename,
+                    "out_filename": out_name,
+                    "src_path": None,
+                }
+                return json.dumps({
+                    "status": "success",
+                    "title": title,
+                    "artist": uploader,
+                    "filename": out_name,
+                    "message": f"Berhasil menemukan lagu '{title}' oleh {uploader}. File MP3 sedang dikirim ke chat..."
+                }, ensure_ascii=False)
+            else:
+                return json.dumps({"error": f"Lagu '{query}' tidak ditemukan atau gagal diunduh."})
+    except Exception as e:
+        log.error(f"[music_search] error: {e}", exc_info=True)
+        return json.dumps({"error": f"Gagal mencari/mengunduh lagu: {str(e)}"})
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
@@ -657,6 +733,7 @@ _TOOL_MAP = {
     "file_convert": _tool_file_convert,
     "media_download": _tool_media_download,
     "remove_bg": _tool_remove_bg,
+    "music_search": _tool_music_search,
 }
 
 
