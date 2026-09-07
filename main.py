@@ -52,7 +52,10 @@ RATE_LIMIT_WINDOW     = 60  # seconds
 
 gemini_client       = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+DEFAULT_FALLBACKS   = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+_env_fallbacks      = [m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "").split(",") if m.strip()]
+GEMINI_FALLBACKS    = _env_fallbacks if _env_fallbacks else DEFAULT_FALLBACKS
+GEMINI_MODELS       = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACKS if m != GEMINI_MODEL]
 
 SYSTEM_PROMPT = """Lo adalah AI yang males, sarkastis, dan sedikit ngeselin — tapi tetap jawab pertanyaannya.
 
@@ -256,10 +259,11 @@ def run_agent(
         temperature=0.7,
     )
 
-    current_model = GEMINI_MODEL
-    max_retries = 3
+    current_model_idx = 0
+    max_retries = max(4, len(GEMINI_MODELS))
 
     for iteration in range(AGENT_MAX_ITERATIONS):
+        current_model = GEMINI_MODELS[current_model_idx]
         log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS} model={current_model}")
 
         response = None
@@ -273,13 +277,18 @@ def run_agent(
                 break
             except Exception as e:
                 err_str = str(e)
-                log.warning(f"Gemini API attempt {attempt + 1}/{max_retries} error: {e}")
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "rate_limit" in err_str:
-                    if current_model != GEMINI_FALLBACK_MODEL:
-                        log.warning(f"Switching to fallback model {GEMINI_FALLBACK_MODEL}...")
-                        current_model = GEMINI_FALLBACK_MODEL
+                log.warning(f"Gemini API attempt {attempt + 1}/{max_retries} with {current_model} error: {e}")
+                if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "rate_limit", "503", "UNAVAILABLE", "404", "NOT_FOUND")):
+                    if current_model_idx + 1 < len(GEMINI_MODELS):
+                        current_model_idx += 1
+                        current_model = GEMINI_MODELS[current_model_idx]
+                        log.warning(f"Switching to fallback model {current_model}...")
+                    else:
+                        current_model_idx = 0
+                        current_model = GEMINI_MODELS[current_model_idx]
+                        log.warning(f"Exhausted fallback pool, retrying with {current_model}...")
                 if attempt < max_retries - 1:
-                    wait = 2 ** attempt
+                    wait = 1.5 * (attempt + 1)
                     time.sleep(wait)
 
         if response is None:
@@ -368,16 +377,23 @@ def solve_academic_question(user_id: int, question: str, photo_bytes: bytes | No
 
     parts.append(types.Part.from_text(text=solver_prompt))
 
-    try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[types.Content(role="user", parts=parts)],
-            config=types.GenerateContentConfig(temperature=0.2),
-        )
-        return response.text or "Maaf, tidak dapat menghasilkan jawaban soal."
-    except Exception as e:
-        log.error(f"[solve_academic_question] error: {e}", exc_info=True)
-        return f"Gagal menyelesaikan soal: {str(e)}"
+    for model_name in GEMINI_MODELS:
+        try:
+            response = gemini_client.models.generate_content(
+                model=model_name,
+                contents=[types.Content(role="user", parts=parts)],
+                config=types.GenerateContentConfig(temperature=0.2),
+            )
+            return response.text or "Maaf, tidak dapat menghasilkan jawaban soal."
+        except Exception as e:
+            err_str = str(e)
+            log.warning(f"[solve_academic_question] Model {model_name} error: {e}")
+            if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "rate_limit", "503", "404", "NOT_FOUND")):
+                log.warning(f"[solve_academic_question] Trying next model in pool...")
+                continue
+            return f"Gagal menyelesaikan soal: {str(e)}"
+
+    return "Ada kendala teknis saat menghubungi AI Gemini untuk menyelesaikan soal, coba lagi ya."
 
 
 
