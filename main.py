@@ -14,7 +14,8 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import User, MessageMediaPhoto, MessageMediaDocument
 from telethon.tl.functions.account import UpdateStatusRequest
-from groq import Groq
+from google import genai
+from google.genai import types
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -36,7 +37,7 @@ logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 
 API_ID           = int(os.environ["TELEGRAM_API_ID"])
 API_HASH         = os.environ["TELEGRAM_API_HASH"]
-GROQ_API_KEY     = os.environ["GROQ_API_KEY"]
+GEMINI_API_KEY   = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GROQ_API_KEY", "")
 SESSION_STRING   = os.environ.get("SESSION_STRING")
 SESSION_FILE     = "session"
 FLASK_PORT       = int(os.environ.get("PORT", 8099))
@@ -49,10 +50,9 @@ RATE_LIMIT_WINDOW     = 60  # seconds
 
 # ─── AI Client ──────────────────────────────────────────────────────────────
 
-groq_client      = Groq(api_key=GROQ_API_KEY)
-GROQ_MODEL          = "llama-3.3-70b-versatile"
-GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
-GROQ_VISION_MODEL   = "llama-3.2-11b-vision-preview"
+gemini_client       = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_MODEL        = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
 
 SYSTEM_PROMPT = """Lo adalah AI yang males, sarkastis, dan sedikit ngeselin — tapi tetap jawab pertanyaannya.
 
@@ -79,13 +79,18 @@ ATURAN PENTING SOAL FAKTA:
 - Ngaku gak tau itu LEBIH BAIK daripada ngasih info yang salah.
 
 Penggunaan Tools (Belakang Layar):
-- Gunakan `web_search` jika user menanyakan fakta, berita, harga, atau topik pengetahuan yang membutuhkan data internet real-time.
-- Gunakan `calculate` jika ada hitungan matematika.
-- Gunakan `set_reminder` jika user minta diingatkan.
-- Gunakan `file_convert` jika user minta ubah format file.
-- WAJIB DIINGAT: Ketika memanggil tool, JANGAN PERNAH menulis format `<function=...>` di teks balasan user!
+- Untuk pertanyaan fakta, berita, harga, atau topik pengetahuan umum, Google Search grounding sudah aktif secara native di Gemini.
+- Gunakan `set_reminder` jika user minta pengingat/reminder.
+- Gunakan `save_note` / `get_notes` jika user ingin mencatat atau melihat catatan tersimpan.
+- Gunakan `file_convert` jika user minta ubah format file (PDF, DOCX, PNG, JPG, TXT).
+- Gunakan `media_download` jika user minta download video/audio dari link media sosial (TikTok, IG, YT, X).
+- Gunakan `remove_bg` jika user minta hapus background foto atau ubah warna pasfoto.
+- Gunakan `music_search` jika user minta cari/download lagu MP3.
+- Gunakan `web_screenshot` jika user minta screenshot web tampilan iPhone mockup.
+- Gunakan `upscale_image` jika user minta jernihkan/upscale foto ke HD Remini.
 
 Lo balas pesan di Telegram. Tetap helpful walau ngeselin."""
+
 
 HELP_TEXT = """Halo! Berikut fitur-fitur canggih yang bisa kamu pakai:
 
@@ -190,41 +195,26 @@ def parse_remind_time(time_str: str) -> datetime | None:
     return None
 
 
-# ─── Agent Loop ──────────────────────────────────────────────────────────────
-
-FUNCTION_CALL_PATTERN = re.compile(
-    r'(?:<)?(?:function=)?([a-zA-Z0-9_]+)>(?:```json\s*)?(\{.*?\})(?:```)?(?:</function>)?',
-    re.DOTALL
-)
-
-
-def extract_manual_function_call(content: str):
-    """Tangkep tool call yang nyasar ke content sebagai teks, bukan tool_calls field."""
-    if not content:
-        return None, content
-    match = FUNCTION_CALL_PATTERN.search(content)
-    if not match:
-        return None, content
-    func_name = match.group(1)
-    try:
-        func_args = json.loads(match.group(2))
-    except json.JSONDecodeError:
-        func_args = {}
-    clean_content = FUNCTION_CALL_PATTERN.sub('', content).strip()
-    return {"name": func_name, "arguments": func_args}, clean_content
-
+# ─── Agent Loop (Gemini) ─────────────────────────────────────────────────────
 
 def word_count(text: str) -> int:
     return len(text.split())
 
 
-def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False) -> str:
+def run_agent(
+    user_id: int,
+    user_message: str,
+    *,
+    image_bytes: bytes | None = None,
+    _no_history_save: bool = False
+) -> str:
     """
-    Full agent loop:
+    Full Gemini agent loop:
       1. Save user message to DB (unless _no_history_save)
-      2. Load recent history from DB
-      3. Call model → if tool_calls → execute → feed results back → repeat
-      4. Return final text answer and save it to DB
+      2. Load recent history from DB and convert to Gemini Content objects
+      3. Call Gemini with Google Search grounding + local function declarations
+      4. Handle function calls iteratively
+      5. Save assistant reply and return
     """
     if word_count(user_message) > SUMMARIZE_WORD_LIMIT:
         user_message = (
@@ -235,231 +225,101 @@ def run_agent(user_id: int, user_message: str, *, _no_history_save: bool = False
         agent_db.save_message(user_id, "user", user_message)
 
     history = agent_db.load_history(user_id, limit=HISTORY_WINDOW)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    contents: list[types.Content] = []
 
+    # Map previous history to types.Content (user and model)
+    history_items = history[:-1] if not _no_history_save else history
+    for h in history_items:
+        role = "user" if h.get("role") == "user" else "model"
+        text_content = h.get("content", "")
+        if text_content:
+            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=text_content)]))
+
+    # Current turn
+    current_parts: list[types.Part] = []
+    if image_bytes:
+        current_parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+    current_parts.append(types.Part.from_text(text=user_message))
+    contents.append(types.Content(role="user", parts=current_parts))
+
+    # Gemini config with native Google Search grounding + local tools
+    tools_list = [
+        types.Tool(
+            google_search=types.GoogleSearch(),
+            function_declarations=TOOLS,
+        )
+    ]
+
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        tools=tools_list,
+        temperature=0.7,
+    )
+
+    current_model = GEMINI_MODEL
     max_retries = 3
 
     for iteration in range(AGENT_MAX_ITERATIONS):
-        log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS}")
-
-        # Auto web_search context injection for factual/real-time questions on turn 0
-        if iteration == 0:
-            user_txt_lower = user_message.lower().strip()
-            factual_keywords = [
-                "siapa", "dimana", "orang mana", "daerah mana", "presiden", "juara", "harga",
-                "kapan", "berita", "skor", "pemain", "pro player", "klub", "tim", "polsub",
-                "tahun berapa", "umur", "asal", "lahir", "sekarang", "skrg", "universitas",
-                "kampus", "sekolah", "lokasi", "alamat", "daerah", "singkatan", "kepanjangan"
-            ]
-            is_factual = any(kw in user_txt_lower for kw in factual_keywords)
-            negation_keywords = ["gak", "ga ", "g ", "nggak", "tidak", "gabisa", "gbs"]
-            is_negated = any(neg in user_txt_lower for neg in negation_keywords)
-
-            if is_factual and not is_negated:
-                log.info(f"[agent] Factual question detected ('{user_message}'), auto-fetching web_search context...")
-                try:
-                    search_json = execute_tool(user_id, "web_search", {"query": user_message})
-                    if "error" not in search_json.lower() and len(search_json) > 30:
-                        messages.append({
-                            "role": "user",
-                            "content": f"[Data internet real-time untuk '{user_message}']:\n{search_json}\n\nGunakan data internet real-time di atas untuk menjawab pertanyaan user dengan fakta akurat, santai, dan lengkap."
-                        })
-                except Exception as e:
-                    log.warning(f"[agent] Auto web_search fetch error: {e}")
+        log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS} model={current_model}")
 
         response = None
-        current_model = GROQ_MODEL
-
         for attempt in range(max_retries):
             try:
-                response = groq_client.chat.completions.create(
+                response = gemini_client.models.generate_content(
                     model=current_model,
-                    messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                    max_tokens=1024,
-                    temperature=0.7,
+                    contents=contents,
+                    config=config,
                 )
                 break
             except Exception as e:
                 err_str = str(e)
-                if "429" in err_str or "rate_limit" in err_str:
-                    if current_model != GROQ_FALLBACK_MODEL:
-                        log.warning(f"Groq model {current_model} rate limited (429), switching to fallback model {GROQ_FALLBACK_MODEL}...")
-                        current_model = GROQ_FALLBACK_MODEL
-                        continue
-                retriable = any(x in err_str for x in ["503", "429", "rate_limit", "overloaded"])
-                if retriable and attempt < max_retries - 1:
+                log.warning(f"Gemini API attempt {attempt + 1}/{max_retries} error: {e}")
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "rate_limit" in err_str:
+                    if current_model != GEMINI_FALLBACK_MODEL:
+                        log.warning(f"Switching to fallback model {GEMINI_FALLBACK_MODEL}...")
+                        current_model = GEMINI_FALLBACK_MODEL
+                if attempt < max_retries - 1:
                     wait = 2 ** attempt
-                    log.warning(f"Groq retry {attempt + 1}/{max_retries} in {wait}s: {e}")
                     time.sleep(wait)
-                elif "tool_use_failed" in err_str or "invalid_request_error" in err_str or "400" in err_str:
-                    log.warning(f"Groq tool call failed ({e}), falling back to direct text completion...")
-                    try:
-                        clean_msgs = [
-                            m for m in messages
-                            if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant") and m.get("content")
-                        ]
-                        fallback_resp = groq_client.chat.completions.create(
-                            model=GROQ_FALLBACK_MODEL,
-                            messages=clean_msgs,
-                            max_tokens=1024,
-                            temperature=0.7,
-                        )
-                        reply = fallback_resp.choices[0].message.content or "(gak ada jawaban)"
-                        agent_db.save_message(user_id, "assistant", reply)
-                        return reply
-                    except Exception as fb_err:
-                        log.error(f"Groq fallback error: {fb_err}")
-                        return "Ada error nih dari AI-nya, coba lagi ya"
-                else:
-                    log.error(f"Groq API error: {e}")
-                    return "Ada error nih dari AI-nya, coba lagi ya"
 
         if response is None:
-            return "Ada error nih dari AI-nya, coba lagi ya"
+            return "Ada kendala teknis saat menghubungi AI Gemini, coba lagi ya."
 
-        choice = response.choices[0]
-
-        # ── Final text answer ──────────────────────────────────────────────
-        if choice.finish_reason != "tool_calls":
-            reply = choice.message.content or "(gak ada jawaban)"
-
-            # 1. Catch leaked tool call in text content
-            manual_call, clean_reply = extract_manual_function_call(reply)
-            if manual_call:
-                tool_name = manual_call["name"]
-                tool_args = manual_call["arguments"]
-                log.warning(f"⚠️ [agent] Leaked tool call detected in message.content: {tool_name}({tool_args})")
-
-                log.info(f"[agent] Executing caught tool call: {tool_name}({tool_args})")
-                result = execute_tool(user_id, tool_name, tool_args)
-                log.info(f"[agent] result: {result[:200]}")
-
-                if clean_reply:
-                    messages.append({"role": "assistant", "content": clean_reply})
-
-                messages.append({
-                    "role": "user",
-                    "content": f"[Hasil eksekusi tool {tool_name}]:\n{result}\n\nTolong jawab pertanyaan user berdasarkan data di atas secara natural, gaul, dan lengkap."
-                })
-                continue
-
-            # 2. Check uncertainty on turn 0
-            uncertainty_kw = [
-                "tidak tahu", "kurang tahu", "tidak memiliki informasi",
-                "tidak tahu pasti", "sebagai ai", "belum tahu", "tidak dapat menemukan",
-                "tidak tersedia", "tidak ada informasi"
-            ]
-            if iteration == 0 and any(kw in reply.lower() for kw in uncertainty_kw):
-                log.info(f"[agent] Model expressed uncertainty, auto-triggering web_search for query: '{user_message}'")
-                search_json = execute_tool(user_id, "web_search", {"query": user_message})
-                messages.append({"role": "assistant", "content": reply})
-                messages.append({
-                    "role": "user",
-                    "content": f"[Hasil pencarian internet untuk '{user_message}']:\n{search_json}\n\nTolong jawab pertanyaan user berdasarkan data pencarian di atas dengan ramah, akurat, dan lengkap."
-                })
-                continue
-
-            # 3. Safety net filter before final return
-            if "<function=" in reply or "function=" in reply or "tool_call" in reply.lower():
-                log.warning(f"⚠️ [agent] Unhandled tool leakage blocked: {reply[:200]}")
-                reply = "Waduh, gua lagi mikir keras nih, coba tanya lagi deh wkwk 😅"
-
+        function_calls = response.function_calls
+        if not function_calls:
+            reply = response.text or "(gak ada jawaban)"
             agent_db.save_message(user_id, "assistant", reply)
             return reply
 
-        # ── Tool call(s) ───────────────────────────────────────────────────
-        assistant_msg = choice.message
-        assistant_dict = {
-            "role": "assistant",
-            "content": assistant_msg.content or "",
-        }
-        if assistant_msg.tool_calls:
-            assistant_dict["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    }
-                } for tc in assistant_msg.tool_calls
-            ]
-        messages.append(assistant_dict)
+        # Model requested function call(s)
+        if response.candidates and response.candidates[0].content:
+            contents.append(response.candidates[0].content)
 
-        for tc in (assistant_msg.tool_calls or []):
-            tool_name = tc.function.name
-            try:
-                tool_args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                tool_args = {}
-
+        fn_response_parts = []
+        for fc in function_calls:
+            tool_name = fc.name
+            tool_args = fc.args if isinstance(fc.args, dict) else {}
             log.info(f"[agent] {tool_name}({tool_args})")
             result = execute_tool(user_id, tool_name, tool_args)
             log.info(f"[agent] result: {result[:200]}")
+            fn_response_parts.append(
+                types.Part.from_function_response(
+                    name=tool_name,
+                    response={"result": result},
+                )
+            )
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "name": tool_name,
-                "content": result,
-            })
+        contents.append(types.Content(role="user", parts=fn_response_parts))
 
     fallback = "Hmm, gua nyoba terus tapi gak kelar-kelar. Coba tanya ulang dengan lebih spesifik."
     return fallback
 
 
-# ─── Vision + Agent Loop ─────────────────────────────────────────────────────
-
-def _vision_describe(image_bytes: bytes, caption: str) -> str | None:
-    """
-    Step 1: ask the vision model to describe/analyse the image.
-    Returns plain text, or None on failure.
-    """
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    prompt = (
-        f"Deskripsikan isi gambar ini secara detail dan akurat, "
-        f"termasuk semua teks, angka, atau objek yang terlihat."
-        + (f"\n\nPertanyaan/instruksi user terkait gambar ini: {caption}" if caption else "")
-    )
-    user_content = [
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-        {"type": "text", "text": prompt},
-    ]
-
-    vision_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
-
-    for model_name in vision_models:
-        for attempt in range(2):
-            try:
-                resp = groq_client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "Kamu adalah AI vision yang mendeskripsikan gambar secara akurat dan lengkap dalam bahasa Indonesia."},
-                        {"role": "user", "content": user_content},
-                    ],
-                    max_tokens=1024,
-                    temperature=0.7,
-                )
-                content = resp.choices[0].message.content
-                if content:
-                    return content
-            except Exception as e:
-                log.warning(f"Groq vision model {model_name} attempt {attempt + 1} error: {e}")
-                time.sleep(1)
-
-    return None
-
-
 def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> str:
     """
-    Two-step image handling:
-      1. Vision model extracts description/text from the image.
-      2. Text agent loop processes the description, can use all tools
-         (e.g. calculate totals from a receipt, search based on image content).
+    Direct multimodal processing with Gemini.
+    Sends image bytes and caption directly in a single turn.
     """
-    # Normalize image bytes to standard JPEG if possible
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(image_bytes))
@@ -471,24 +331,54 @@ def get_ai_reply_with_image(user_id: int, image_bytes: bytes, caption: str) -> s
     except Exception as e:
         log.warning(f"Failed to normalize image bytes: {e}")
 
-    vision_text = _vision_describe(image_bytes, caption)
+    user_text = caption if caption else "Tolong jelaskan atau tanggapi gambar ini secara santai dan cerdas."
+    agent_db.save_message(user_id, "user", f"[Foto/Gambar] {user_text}")
+    return run_agent(user_id, user_text, image_bytes=image_bytes, _no_history_save=True)
 
-    if not vision_text:
-        vision_text = "Gambar telah diterima (deskripsi visual otomatis tidak tersedia)."
 
-    if caption:
-        combined = (
-            f"[Gambar yang dikirim user. Deskripsi otomatis dari gambar:\n{vision_text}]\n\n"
-            f"Pertanyaan/instruksi user: {caption}"
+def solve_academic_question(user_id: int, question: str, photo_bytes: bytes | None = None) -> str:
+    """
+    AI Academic / Math / Science Solver using Gemini's native reasoning.
+    Solves problems step-by-step from text and/or photo.
+    """
+    log.info(f"[solve_academic] user={user_id} question={question!r} has_photo={bool(photo_bytes)}")
+    solver_prompt = (
+        "Kamu adalah Tutor AI Jenius yang sangat ahli Matematika, Fisika, Kimia, dan Soal Akademis. "
+        "Tugasmu adalah menganalisis dan menyelesaikan soal dengan format super rapi:\n"
+        "1. 📝 **Identifikasi Soal:** Tuliskan ulang soal dengan jelas.\n"
+        "2. 💡 **Rumus / Konsep yang Digunakan:** Sebutkan rumus utama yang dipakai.\n"
+        "3. 🔍 **Langkah-Langkah Penyelesaian:** Berikan penjelasan runtut, logis, dan gampang dipahami.\n"
+        "4. ✅ **Jawaban Akhir:** Highlight hasil/jawaban akhir dengan tebal.\n\n"
+        f"Soal/Pertanyaan User: {question or 'Tolong jawab dan selesaikan soal yang ada pada foto ini.'}"
+    )
+
+    parts: list[types.Part] = []
+    if photo_bytes:
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(photo_bytes))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            photo_bytes = buf.getvalue()
+        except Exception as e:
+            log.warning(f"Failed to normalize photo bytes for academic solver: {e}")
+        parts.append(types.Part.from_bytes(data=photo_bytes, mime_type="image/jpeg"))
+
+    parts.append(types.Part.from_text(text=solver_prompt))
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(temperature=0.2),
         )
-    else:
-        combined = (
-            f"[User mengirimkan sebuah gambar/foto. Deskripsi:\n{vision_text}]\n\n"
-            "Tolong berikan balasan yang ramah dan tanyakan apa yang bisa dibantu dari gambar ini."
-        )
+        return response.text or "Maaf, tidak dapat menghasilkan jawaban soal."
+    except Exception as e:
+        log.error(f"[solve_academic_question] error: {e}", exc_info=True)
+        return f"Gagal menyelesaikan soal: {str(e)}"
 
-    agent_db.save_message(user_id, "user", combined)
-    return run_agent(user_id, combined, _no_history_save=True)
 
 
 # ─── Flask Keep-Alive ────────────────────────────────────────────────────────
@@ -747,21 +637,14 @@ def check_and_trigger_direct_upscale(user_id: int, text_content: str) -> bool:
     return True
 
 
-def check_and_trigger_direct_math_solver(user_id: int, text_content: str) -> bool:
-    """If user text explicitly asks to solve a math/science/homework question."""
+def check_is_math_question(text_content: str) -> bool:
+    """Check if user text explicitly asks to solve a math/science/academic homework question."""
     if not text_content:
         return False
     txt = text_content.strip().lower()
-
     math_keywords = ["jawab soal", "bantu jawab", "selesaikan soal", "cara pengerjaan", "kunci jawaban", "jawabkan", "solver"]
-    if not any(kw in txt for kw in math_keywords):
-        return False
+    return any(kw in txt for kw in math_keywords)
 
-    from agent_tools import execute_tool
-    log.info(f"[auto_math] Direct math_solver triggered for user={user_id}")
-    res = execute_tool(user_id, "math_solver", {"question": text_content})
-    log.info(f"[auto_math] execute_tool result: {res}")
-    return True
 
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -849,7 +732,7 @@ async def handle_private_message(event):
                     if not bg_triggered:
                         hd_triggered = check_and_trigger_direct_upscale(user_id, caption)
                         if not hd_triggered:
-                            solve_triggered = check_and_trigger_direct_math_solver(user_id, caption)
+                            solve_triggered = check_is_math_question(caption)
 
                 if triggered:
                     await event.reply("⚡ Sip, foto kamu sedang diubah jadi PDF...")
@@ -858,11 +741,15 @@ async def handle_private_message(event):
                 elif hd_triggered:
                     await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
                 elif solve_triggered:
-                    await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal foto kamu...")
+                    await event.reply("🧠 Sip bro, AI Gemini sedang menganalisis & menyelesaikan soal foto kamu...")
+                    reply = await asyncio.to_thread(solve_academic_question, user_id, caption, image_bytes)
+                    await event.reply(reply)
+                    log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
                 else:
                     reply = await asyncio.to_thread(get_ai_reply_with_image, user_id, image_bytes, caption)
                     await event.reply(reply)
                     log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
+
 
             from agent_tools import pop_pending_converted_file
             pending = pop_pending_converted_file(user_id)
@@ -1089,20 +976,18 @@ async def handle_private_message(event):
         # Explicit slash commands for AI Math & Homework Solver: /jawab [soal] or /soal [soal]
         if any(cmd_lower.startswith(p) for p in ["/jawab", "/soal", "/tanya", "!jawab", "!soal", ".jawab", ".soal"]):
             question_text = re.sub(r'^[/#!\.](?:jawab|soal|tanya)\s*', '', text, flags=re.IGNORECASE).strip()
-            await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal kamu...")
-            from agent_tools import execute_tool
-            res_str = execute_tool(user_id, "math_solver", {"question": question_text})
-            try:
-                res_data = json.loads(res_str)
-                if "answer" in res_data:
-                    await event.reply(res_data["answer"])
-                elif "error" in res_data:
-                    await event.reply(f"❌ {res_data['error']}")
-                else:
-                    await event.reply("❌ Gagal mendapatkan jawaban soal. Silakan coba lagi.")
-            except Exception as e:
-                log.error(f"Error parsing math solver reply: {e}")
-                await event.reply("❌ Terjadi kesalahan saat memproses jawaban soal.")
+            await event.reply("🧠 Sip bro, AI Gemini sedang menganalisis & menyelesaikan soal kamu...")
+            photo_bytes = None
+            if event.is_reply:
+                try:
+                    reply_msg = await event.get_reply_message()
+                    if reply_msg and reply_msg.media:
+                        photo_bytes = await reply_msg.download_media(file=bytes)
+                except Exception as e:
+                    log.warning(f"Failed to fetch reply photo for /jawab: {e}")
+
+            reply = await asyncio.to_thread(solve_academic_question, user_id, question_text, photo_bytes)
+            await event.reply(reply)
             return
 
         if text.startswith("/"):
@@ -1130,7 +1015,7 @@ async def handle_private_message(event):
                             if not shot_triggered:
                                 hd_triggered = check_and_trigger_direct_upscale(user_id, text)
                                 if not hd_triggered:
-                                    solve_triggered = check_and_trigger_direct_math_solver(user_id, text)
+                                    solve_triggered = check_is_math_question(text)
 
             if media_triggered:
                 await event.reply("📥 Sip bro, video/media lagi di-download dari link kamu...")
@@ -1143,7 +1028,9 @@ async def handle_private_message(event):
             elif hd_triggered:
                 await event.reply("✨ Sip bro, foto kamu sedang dijernihkan ke HD (Remini Quality)...")
             elif solve_triggered:
-                await event.reply("🧠 Sip bro, AI Tutor sedang menganalisis & menyelesaikan soal kamu...")
+                reply = await asyncio.to_thread(solve_academic_question, user_id, text)
+                await event.reply(reply)
+                log.info(f"📤 [{username}|{user_id}] {reply[:100]}{'...' if len(reply) > 100 else ''}")
             elif not triggered:
                 reply = await asyncio.to_thread(run_agent, user_id, text)
                 await event.reply(reply)

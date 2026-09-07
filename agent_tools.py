@@ -2,268 +2,181 @@
 Tool definitions and implementations for the Telegram AI agent.
 
 Each tool has:
-  - A JSON schema (TOOLS list) — passed to Groq's tools= parameter
+  - A schema definition (GEMINI_TOOLS list) — passed to Gemini's tools= parameter
   - An implementation function — called when the model requests it
 """
 
 import json
 import logging
 import base64
+import ast
+import operator
+import math
 from datetime import datetime, timezone
 
-from simpleeval import simple_eval, EvalWithCompoundTypes, InvalidExpression
-from duckduckgo_search import DDGS
+from google.genai import types
 
 import agent_db
 
 log = logging.getLogger(__name__)
 
-# ─── Tool Schemas (OpenAI / Groq format) ─────────────────────────────────────
+# ─── Gemini Tool Schemas (google-genai FunctionDeclaration) ──────────────────
 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": (
-                "Cari informasi real-time dan fakta di internet pakai DuckDuckGo. "
-                "WAJIB digunakan saat user menanyakan pertanyaan tentang istilah, singkatan, tim esport/olahraga (misal BTR, RRQ, EVOS), "
-                "tokoh, berita, fakta, harga, cuaca, atau topik umum apa pun agar jawaban selalu akurat dan terbaru."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Query pencarian dalam bahasa Indonesia atau Inggris (misal 'apa itu BTR esport', 'harga btc hari ini').",
-                    },
+GEMINI_TOOLS = [
+    types.FunctionDeclaration(
+        name="set_reminder",
+        description=(
+            "WAJIB panggil tool ini setiap kali user minta pengingat/reminder dalam durasi atau waktu apapun "
+            "(misal '2 detik', '5 menit', '1 jam', 'besok jam 9'). "
+            "bisa menerima string waktu relatif seperti '2 detik', '5 menit', '+10s' atau ISO format."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Isi pesan pengingat.",
                 },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_reminder",
-            "description": (
-                "WAJIB panggil tool ini setiap kali user minta pengingat/reminder dalam durasi atau waktu apapun "
-                "(misal '2 detik', '5 menit', '1 jam', 'besok jam 9'). "
-                "bisa menerima string waktu relatif seperti '2 detik', '5 menit', '+10s' atau ISO format."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "Isi pesan pengingat.",
-                    },
-                    "remind_at": {
-                        "type": "string",
-                        "description": "Waktu pengingat (contoh: '2 detik', '5 menit', '1 jam', '+30s', atau ISO format).",
-                    },
+                "remind_at": {
+                    "type": "string",
+                    "description": "Waktu pengingat (contoh: '2 detik', '5 menit', '1 jam', '+30s', atau ISO format).",
                 },
-                "required": ["message", "remind_at"],
             },
+            "required": ["message", "remind_at"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_note",
-            "description": "Simpan catatan personal untuk user. Cocok buat nyimpen info penting.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Isi catatan yang mau disimpan.",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="save_note",
+        description="Simpan catatan personal untuk user. Cocok buat nyimpen info penting.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Isi catatan yang mau disimpan.",
                 },
-                "required": ["content"],
             },
+            "required": ["content"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_notes",
-            "description": "Ambil semua catatan personal milik user.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
+    ),
+    types.FunctionDeclaration(
+        name="get_notes",
+        description="Ambil semua catatan personal milik user.",
+        parameters={
+            "type": "object",
+            "properties": {},
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate",
-            "description": (
-                "Hitung ekspresi matematika dengan aman. "
-                "Contoh: '2 ** 10', '(3.14 * 5**2)', 'sqrt(144)' (butuh 'math.' prefix: 'math.sqrt(144)'). "
-                "Jangan pakai buat hal di luar matematika."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Ekspresi matematika yang mau dihitung.",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="file_convert",
+        description=(
+            "Konversi file yang baru saja dikirim user ke format lain. "
+            "Gunakan setelah user mengirim file dan meminta konversi (misal 'ubah ke PDF', 'jadiin docx', 'jadiin png', 'ekstrak ke txt')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "target_format": {
+                    "type": "string",
+                    "enum": ["pdf", "docx", "png", "jpg", "txt"],
+                    "description": "Format target konversi.",
                 },
-                "required": ["expression"],
             },
+            "required": ["target_format"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "file_convert",
-            "description": (
-                "Konversi file yang baru saja dikirim user ke format lain. "
-                "Gunakan setelah user mengirim file dan meminta konversi (misal 'ubah ke PDF', 'jadiin docx', 'jadiin png', 'ekstrak ke txt')."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target_format": {
-                        "type": "string",
-                        "enum": ["pdf", "docx", "png", "jpg", "txt"],
-                        "description": "Format target konversi.",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="media_download",
+        description=(
+            "Unduh video atau MP3 audio dari link sosial media (TikTok, Instagram Reels, YouTube Shorts, Twitter/X, dll). "
+            "Gunakan saat user mengirimkan link media sosial atau meminta unduh video/audio dari link."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL/link media sosial yang mau diunduh.",
                 },
-                "required": ["target_format"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "media_download",
-            "description": (
-                "Unduh video atau MP3 audio dari link sosial media (TikTok, Instagram Reels, YouTube Shorts, Twitter/X, dll). "
-                "Gunakan saat user mengirimkan link media sosial atau meminta unduh video/audio dari link."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL/link media sosial yang mau diunduh.",
-                    },
-                    "extract_audio": {
-                        "type": "boolean",
-                        "description": "Set true jika user minta format MP3 / audio saja.",
-                    },
+                "extract_audio": {
+                    "type": "boolean",
+                    "description": "Set true jika user minta format MP3 / audio saja.",
                 },
-                "required": ["url"],
             },
+            "required": ["url"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "remove_bg",
-            "description": (
-                "Hapus background dari foto/gambar yang diunggah user. Bisa ubah ke transparan (PNG) atau pasfoto background merah/biru/putih. "
-                "Gunakan saat user minta hapus background foto, bikin PNG transparan, atau ubah warna background pasfoto."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "bg_color": {
-                        "type": "string",
-                        "enum": ["transparent", "merah", "biru", "putih"],
-                        "description": "Warna background target: 'transparent' (default PNG), 'merah', 'biru', atau 'putih'.",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="remove_bg",
+        description=(
+            "Hapus background dari foto/gambar yang diunggah user. Bisa ubah ke transparan (PNG) atau pasfoto background merah/biru/putih. "
+            "Gunakan saat user minta hapus background foto, bikin PNG transparan, atau ubah warna background pasfoto."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "bg_color": {
+                    "type": "string",
+                    "enum": ["transparent", "merah", "biru", "putih"],
+                    "description": "Warna background target: 'transparent' (default PNG), 'merah', 'biru', atau 'putih'.",
                 },
-                "required": [],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "music_search",
-            "description": (
-                "Cari dan unduh lagu/musik MP3 berdasarkan judul lagu atau nama penyanyi. "
-                "Gunakan saat user minta 'cari lagu [judul]', 'download mp3 [judul]', atau 'setel lagu [judul]'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Judul lagu atau nama penyanyi yang ingin dicari (misal 'Komang Raim Laode', 'Melompat Lebih Tinggi Sheila on 7').",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="music_search",
+        description=(
+            "Cari dan unduh lagu/musik MP3 berdasarkan judul lagu atau nama penyanyi. "
+            "Gunakan saat user minta 'cari lagu [judul]', 'download mp3 [judul]', atau 'setel lagu [judul]'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Judul lagu atau nama penyanyi yang ingin dicari (misal 'Komang Raim Laode', 'Melompat Lebih Tinggi Sheila on 7').",
                 },
-                "required": ["query"],
             },
+            "required": ["query"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_screenshot",
-            "description": (
-                "Ambil screenshot tampilan website dan bungkus dalam frame HP iPhone 15 Pro POV (Dynamic Island). "
-                "Gunakan saat user minta '/iphone [url]', '/shot [url]', 'screenshot web [url]', atau 'tampilan iphone [url]'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "URL website yang ingin di-screenshot (misal 'https://github.com' atau 'google.com').",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="web_screenshot",
+        description=(
+            "Ambil screenshot tampilan website dan bungkus dalam frame HP iPhone 15 Pro POV (Dynamic Island). "
+            "Gunakan saat user minta '/iphone [url]', '/shot [url]', 'screenshot web [url]', atau 'tampilan iphone [url]'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL website yang ingin di-screenshot (misal 'https://github.com' atau 'google.com').",
                 },
-                "required": ["url"],
             },
+            "required": ["url"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "upscale_image",
-            "description": (
-                "Jernihkan foto buram/pecah dan tingkatkan resolusi foto ke HD (4x Upscale + Sharpening Remini Quality). "
-                "Gunakan saat user minta 'hd', 'upscale', 'jernihkan foto', 'perjelas foto', atau 'remini'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "scale": {
-                        "type": "integer",
-                        "description": "Faktor perbesaran resolusi (default 4x).",
-                    },
+    ),
+    types.FunctionDeclaration(
+        name="upscale_image",
+        description=(
+            "Jernihkan foto buram/pecah dan tingkatkan resolusi foto ke HD (4x Upscale + Sharpening Remini Quality). "
+            "Gunakan saat user minta 'hd', 'upscale', 'jernihkan foto', 'perjelas foto', atau 'remini'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "scale": {
+                    "type": "integer",
+                    "description": "Faktor perbesaran resolusi (default 4x).",
                 },
-                "required": [],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "math_solver",
-            "description": (
-                "Bantu selesaikan soal matematika, fisika, kimia, atau soal akademis dari foto/teks secara runtut dan jelas. "
-                "Gunakan saat user minta '/jawab [soal]', '/soal [soal]', 'bantu jawab soal ini', atau 'selesaikan soal'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "Teks soal atau deskripsi masalah akademis/matematika yang ingin diselesaikan.",
-                    },
-                },
-                "required": ["question"],
-            },
-        },
-    },
+    ),
 ]
+
+TOOLS = GEMINI_TOOLS
+
 
 
 # ─── Tool Implementations ─────────────────────────────────────────────────────
@@ -415,112 +328,6 @@ def _tool_file_convert(user_id: int, target_format: str) -> str:
         log.error(f"[file_convert] error: {e}", exc_info=True)
         return json.dumps({"error": f"Gagal mengonversi file: {e}"})
 
-
-def _search_ddg_html(query: str, max_results: int = 5) -> list[dict]:
-    import urllib.request
-    import urllib.parse
-    import re
-    import ssl
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
-    req = urllib.request.Request(url, headers=headers)
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=2.5) as resp:
-            html = resp.read().decode("utf-8", errors="ignore")
-
-        results = []
-        snippets = re.findall(r'result__snippet[^>]*>(.*?)</a>', html, re.DOTALL)
-        titles = re.findall(r'result__a[^>]*>(.*?)</a>', html, re.DOTALL)
-
-        for t, s in zip(titles, snippets):
-            t_clean = re.sub(r'<[^>]+>', '', t).replace('\n', ' ').strip()
-            s_clean = re.sub(r'<[^>]+>', '', s).replace('\n', ' ').strip()
-            if t_clean and s_clean:
-                results.append({"title": t_clean, "snippet": s_clean})
-                if len(results) >= max_results:
-                    break
-        return results
-    except Exception as e:
-        log.error(f"[html_search] error: {e}")
-        return []
-
-
-def _search_wikipedia(query: str, max_results: int = 3) -> list[dict]:
-    import urllib.request
-    import urllib.parse
-    import json
-    import re
-
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    url = "https://id.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + urllib.parse.quote(query) + "&format=json"
-    req = urllib.request.Request(url, headers=headers)
-
-    try:
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = []
-            for item in data.get("query", {}).get("search", [])[:max_results]:
-                title = item.get("title", "")
-                snippet = re.sub(r'<[^>]+>', '', item.get("snippet", "")).strip()
-                if title and snippet:
-                    results.append({"title": title, "snippet": snippet, "url": f"https://id.wikipedia.org/wiki/{urllib.parse.quote(title)}"})
-            return results
-    except Exception as e:
-        log.warning(f"[wiki_search] error: {e}")
-        return []
-
-
-def _tool_web_search(user_id: int, query: str, max_results: int = 5) -> str:
-    max_results = min(int(max_results), 10)
-    log.info(f"[tool:web_search] user={user_id} query={query!r} n={max_results}")
-
-    results = []
-
-    # 1. Try Wikipedia API (full query or clean core keywords like 'polsub')
-    wiki_results = _search_wikipedia(query, max_results=3)
-    if not wiki_results and len(query.split()) > 1:
-        clean_words = [
-            w for w in query.split()
-            if w.lower() not in ["daerah", "mana", "apa", "itu", "siapa", "universitas", "kampus", "lokasi", "alamat"]
-        ]
-        if clean_words:
-            wiki_results = _search_wikipedia(" ".join(clean_words), max_results=3)
-
-    if wiki_results:
-        results.extend(wiki_results)
-
-    # 2. Try DDGS library
-    try:
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(query, max_results=max_results))
-        if raw:
-            for r in raw:
-                t = r.get("title", "")
-                b = r.get("body", "")
-                if t and b and not any(kw in t.lower() for kw in ["thesaurus", "antonym", "synonym"]):
-                    results.append({"title": t, "snippet": b, "url": r.get("href", "")})
-    except Exception as e:
-        log.warning(f"[tool:web_search] DDGS library failed ({e})")
-
-    # 3. Try HTML fallback if still empty
-    if not results:
-        results = _search_ddg_html(query, max_results=max_results)
-
-    if not results:
-        return json.dumps({"error": f"Tidak ada hasil ditemukan untuk '{query}'."})
-
-    return json.dumps(results[:max_results], ensure_ascii=False)
-
-
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -598,15 +405,40 @@ def _tool_get_notes(user_id: int) -> str:
 def clean_math_expression(expr: str) -> str:
     """Clean Indonesian math notation like '7 x 7', '7 v 7', '10 : 2', '3,14'."""
     expr = expr.strip()
-    # Replace 'x' or 'X' or 'v' or 'V' between numbers or parentheses with '*'
     expr = re.sub(r'(\d+|\))\s*[xXvV]\s*(\d+|\()', r'\1 * \2', expr)
-    # Replace ':' between numbers or parentheses with '/'
     expr = re.sub(r'(\d+|\))\s*:\s*(\d+|\()', r'\1 / \2', expr)
-    # Replace '^' exponent with '**'
     expr = expr.replace('^', '**')
-    # Replace Indonesian comma decimal separator (e.g. 3,14 -> 3.14)
     expr = re.sub(r'(\d+),(\d+)', r'\1.\2', expr)
     return expr
+
+
+_SAFE_MATH_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _safe_eval_ast(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp):
+        op_type = type(node.op)
+        if op_type not in _SAFE_MATH_OPS:
+            raise ValueError(f"Operator {op_type} tidak didukung.")
+        return _SAFE_MATH_OPS[op_type](_safe_eval_ast(node.left), _safe_eval_ast(node.right))
+    if isinstance(node, ast.UnaryOp):
+        op_type = type(node.op)
+        if op_type not in _SAFE_MATH_OPS:
+            raise ValueError(f"Operator {op_type} tidak didukung.")
+        return _SAFE_MATH_OPS[op_type](_safe_eval_ast(node.operand))
+    raise ValueError("Ekspresi tidak aman atau tidak didukung.")
 
 
 def _tool_calculate(user_id: int, expression: str) -> str:
@@ -615,18 +447,15 @@ def _tool_calculate(user_id: int, expression: str) -> str:
     log.info(f"[tool:calculate] cleaned_expr={clean_expr!r}")
 
     try:
-        import math
-        names = {k: getattr(math, k) for k in dir(math) if not k.startswith("_")}
-        names["math"] = math
-        result = simple_eval(clean_expr, names=names)
+        parsed = ast.parse(clean_expr, mode="eval")
+        result = _safe_eval_ast(parsed.body)
         return json.dumps({"expression": expression, "clean_expression": clean_expr, "result": result})
-    except InvalidExpression:
-        return json.dumps({"error": f"Format hitungan '{expression}' kurang pas. Contoh yang benar: '7 x 7' atau '(10 + 5) * 2'."})
     except ZeroDivisionError:
         return json.dumps({"error": "Pembagian dengan nol tidak diperbolehkan."})
     except Exception as e:
         log.error(f"[tool:calculate] error: {e}")
-        return json.dumps({"error": f"Gagal menghitung '{expression}'. Pastikan menggunakan angka dan simbol matematika yang benar."})
+        return json.dumps({"error": f"Gagal menghitung '{expression}'. Pastikan format angka dan simbol benar (misal: '7 x 7' atau '(10 + 5) * 2')."})
+
 
 
 def _tool_media_download(user_id: int, url: str, extract_audio: bool = False) -> str:
@@ -994,75 +823,9 @@ def _tool_upscale_image(user_id: int, scale: int = 4) -> str:
         return json.dumps({"error": f"Gagal menjernihkan foto: {str(e)}"})
 
 
-def _tool_math_solver(user_id: int, question: str = "") -> str:
-    """Solve math, physics, chemistry, or academic problems step-by-step."""
-    import os, base64
-    log.info(f"[tool:math_solver] user={user_id} question={question!r}")
-
-    file_info = USER_LAST_FILES.get(user_id)
-    has_photo = file_info and os.path.exists(file_info["path"])
-
-    solver_prompt = (
-        "Kamu adalah Tutor AI Jenius yang sangat ahli Matematika, Fisika, Kimia, dan Soal Akademis. "
-        "Tugasmu adalah menganalisis dan menyelesaikan soal dengan format super rapi:\n"
-        "1. 📝 **Identifikasi Soal:** Tuliskan ulang soal dengan jelas.\n"
-        "2. 💡 **Rumus / Konsep yang Digunakan:** Sebutkan rumus utama yang dipakai.\n"
-        "3. 🔍 **Langkah-Langkah Penyelesaian:** Berikan penjelasan runtut, logis, dan gampang dipahami.\n"
-        "4. ✅ **Jawaban Akhir:** Highlight hasil/jawaban akhir dengan tebal.\n\n"
-        f"Soal/Pertanyaan User: {question or 'Tolong jawab dan selesaikan soal yang ada pada foto ini.'}"
-    )
-
-    try:
-        from groq import Groq
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            return json.dumps({"error": "GROQ_API_KEY belum dikonfigurasi di environment."})
-        client = Groq(api_key=api_key)
-
-        if has_photo:
-            with open(file_info["path"], "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode()
-
-            resp = client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": solver_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                        ]
-                    }
-                ],
-                temperature=0.2,
-                max_tokens=1500,
-            )
-            answer = resp.choices[0].message.content
-        else:
-            resp = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": "Kamu adalah Tutor AI Jenius matematika & sains."},
-                    {"role": "user", "content": solver_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1500,
-            )
-            answer = resp.choices[0].message.content
-
-        return json.dumps({
-            "status": "success",
-            "answer": answer,
-        }, ensure_ascii=False)
-    except Exception as e:
-        log.error(f"[math_solver] error: {e}", exc_info=True)
-        return json.dumps({"error": f"Gagal menyelesaikan soal: {str(e)}"})
-
-
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 _TOOL_MAP = {
-    "web_search": _tool_web_search,
     "set_reminder": _tool_set_reminder,
     "save_note": _tool_save_note,
     "get_notes": _tool_get_notes,
@@ -1073,7 +836,6 @@ _TOOL_MAP = {
     "music_search": _tool_music_search,
     "web_screenshot": _tool_web_screenshot,
     "upscale_image": _tool_upscale_image,
-    "math_solver": _tool_math_solver,
 }
 
 
@@ -1081,5 +843,6 @@ def execute_tool(user_id: int, tool_name: str, tool_args: dict) -> str:
     """Run a tool by name and return its JSON string result."""
     fn = _TOOL_MAP.get(tool_name)
     if fn is None:
-        return json.dumps({"error": f"Tool '{tool_name}' tidak dikenal."})
+        return json.dumps({"error": f"Tool '{tool_name}' tidak dikenal atau sudah diintegrasikan langsung ke Gemini."})
     return fn(user_id=user_id, **tool_args)
+

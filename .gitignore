@@ -54,3 +54,7 @@ Thumbs.db
 
 # Temporary user file conversion directory
 temp_files/
+
+# Python compiled
+__pycache__/
+*.pyc
