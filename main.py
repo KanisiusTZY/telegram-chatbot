@@ -56,6 +56,23 @@ DEFAULT_FALLBACKS   = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash
 _env_fallbacks      = [m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "").split(",") if m.strip()]
 GEMINI_FALLBACKS    = _env_fallbacks if _env_fallbacks else DEFAULT_FALLBACKS
 GEMINI_MODELS       = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACKS if m != GEMINI_MODEL]
+ENABLE_GOOGLE_SEARCH = os.environ.get("ENABLE_GOOGLE_SEARCH", "true").lower() in ("true", "1")
+_google_search_disabled_until = 0.0
+
+def get_gemini_tools(enable_search: bool = True) -> list[types.Tool]:
+    global _google_search_disabled_until
+    if enable_search and ENABLE_GOOGLE_SEARCH and time.time() > _google_search_disabled_until:
+        return [
+            types.Tool(
+                google_search=types.GoogleSearch(),
+                function_declarations=TOOLS,
+            )
+        ]
+    return [
+        types.Tool(
+            function_declarations=TOOLS,
+        )
+    ]
 
 SYSTEM_PROMPT = """Lo adalah AI yang males, sarkastis, dan sedikit ngeselin — tapi tetap jawab pertanyaannya.
 
@@ -245,29 +262,23 @@ def run_agent(
     current_parts.append(types.Part.from_text(text=user_message))
     contents.append(types.Content(role="user", parts=current_parts))
 
-    # Gemini config with native Google Search grounding + local tools
-    tools_list = [
-        types.Tool(
-            google_search=types.GoogleSearch(),
-            function_declarations=TOOLS,
-        )
-    ]
-
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        tools=tools_list,
-        temperature=0.7,
-    )
-
+    global _google_search_disabled_until
     current_model_idx = 0
-    max_retries = max(4, len(GEMINI_MODELS))
+    max_retries = max(5, len(GEMINI_MODELS) + 1)
+    use_search = ENABLE_GOOGLE_SEARCH and (time.time() > _google_search_disabled_until)
 
     for iteration in range(AGENT_MAX_ITERATIONS):
         current_model = GEMINI_MODELS[current_model_idx]
-        log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS} model={current_model}")
+        log.info(f"[agent] user={user_id} iter={iteration + 1}/{AGENT_MAX_ITERATIONS} model={current_model} search={use_search}")
 
         response = None
         for attempt in range(max_retries):
+            tools_list = get_gemini_tools(enable_search=use_search)
+            config = types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                tools=tools_list,
+                temperature=0.7,
+            )
             try:
                 response = gemini_client.models.generate_content(
                     model=current_model,
@@ -277,7 +288,15 @@ def run_agent(
                 break
             except Exception as e:
                 err_str = str(e)
-                log.warning(f"Gemini API attempt {attempt + 1}/{max_retries} with {current_model} error: {e}")
+                log.warning(f"Gemini API attempt {attempt + 1}/{max_retries} with {current_model} (search={use_search}) error: {e}")
+
+                # If Google Search Grounding quota caused 429 RESOURCE_EXHAUSTED, disable search and retry immediately
+                if use_search and any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "rate_limit")):
+                    log.warning("Google Search Grounding quota exhausted (429). Disabling search grounding for 1 hour and retrying...")
+                    _google_search_disabled_until = time.time() + 3600
+                    use_search = False
+                    continue
+
                 if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "rate_limit", "503", "UNAVAILABLE", "404", "NOT_FOUND")):
                     if current_model_idx + 1 < len(GEMINI_MODELS):
                         current_model_idx += 1
